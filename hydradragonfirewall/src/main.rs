@@ -1561,9 +1561,6 @@ impl FirewallApp {
 // ============================================================================
 
 fn main() -> Result<(), eframe::Error> {
-    // Note: Stack size must be set at compile time via linker flags or at thread creation time
-    // For main thread, we rely on default stack size and use thread::Builder for worker threads
-    
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
@@ -1574,6 +1571,7 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "HydraDragon Firewall",
         options,
-        Box::new(|_| Ok(Box::new(FirewallApp::default()))),
+        // We use the custom new() method instead of default() to prevent stack overflow
+        Box::new(|cc| Ok(Box::new(FirewallApp::new(cc)))),
     )
 }
