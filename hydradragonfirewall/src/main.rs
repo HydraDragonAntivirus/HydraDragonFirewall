@@ -755,7 +755,7 @@ impl FirewallEngine {
                 "🔥 Firewall protection ACTIVE".into()));
 
             while !stop_net.load(Ordering::Relaxed) {
-                let recv_result = handle.recv_ex(Some(&mut buffer), 0);
+                let recv_result = handle.recv_ex(Some(&mut buffer), 10);
                 
                 let packets = match recv_result {
                     Ok(p) => p,
