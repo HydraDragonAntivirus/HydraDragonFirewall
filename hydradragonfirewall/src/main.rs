@@ -6,10 +6,14 @@ use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, IpAddr, Ipv6Addr};
 
 // ============================================================================
 mod injector;
+mod web_filter;
+
+use injector::Injector;
+use web_filter::WebFilter;
 
 // ============================================================================
 // DATA STRUCTURES
@@ -689,6 +693,21 @@ impl FirewallEngine {
         // ====================================================================
         // NETWORK LAYER (Main Firewall Logic)
         // ====================================================================
+        let app_manager = Arc::clone(&self.app_manager);
+        let web_filter = Arc::clone(&self.web_filter);
+        let stop = Arc::clone(&self.stop_signal);
+
+        // ====================================================================
+        // NETWORK LAYER (Main Firewall Logic)
+        // ====================================================================
+        let am_net = Arc::clone(&self.app_manager);
+        let wf_net = Arc::clone(&self.web_filter);
+        let stop_net = Arc::clone(&self.stop_signal);
+        let stats_net = Arc::clone(&self.stats);
+        let rules_net = Arc::clone(&self.rules);
+        let dh_net = Arc::clone(&self.dns_handler);
+        let tx_net = tx.clone();
+        
         thread::spawn(move || {
             let _ = tx.send(EngineMessage::Log(LogLevel::Info, 
                 "Initializing WinDivert network driver...".into()));
@@ -746,38 +765,31 @@ impl FirewallEngine {
 
                     // 0. Web Filter Check (Optimized)
                     if !should_block {
-                        if let Some(addr) = &packet.addr {
-                            let src_ip_check: Option<IpAddr> = if addr.IPv4() {
-                                let hdr = packet.ip_header();
-                                Some(IpAddr::V4(Ipv4Addr::from(u32::from_le(hdr.SrcAddr))))
-                            } else if addr.IPv6() {
-                                // Basic IPv6 extraction from WinDivert address if available, 
-                                // otherwise we need raw packet parsing which is complex here.
-                                // Minimal support for now.
-                                let hdr = packet.ipv6_header();
-                                let src = hdr.SrcAddr;
-                                // Convert [u32; 4] to Ipv6Addr (u32 needs to be native endian)
-                                // WinDivert header fields are native endian? No, usually network.
-                                // Actually packet.ipv6_header() returns the C struct.
-                                // Let's skip complex IPv6 parse for safe auto-run to avoid undefined behavior without checking docs.
-                                None 
-                            } else { None };
+                        let src_ip_check: Option<IpAddr> = if addr.IPv4() {
+                            let hdr = packet.ip_header();
+                            Some(IpAddr::V4(Ipv4Addr::from(u32::from_le(hdr.SrcAddr))))
+                        } else if addr.IPv6() {
+                            // Basic IPv6 extraction from WinDivert address if available
+                            let hdr = packet.ipv6_header();
+                            let src = hdr.SrcAddr;
+                            // Skipping complex IPv6 parse for now to avoid build issues without docs check
+                            None 
+                        } else { None };
 
-                            if let Some(ip) = src_ip_check {
-                                if self.web_filter.is_blocked_ip(ip) {
-                                    should_block = true;
-                                    block_reason = format!("Blocked Malicious IP: {}", ip);
-                                    let _ = tx.send(EngineMessage::Log(LogLevel::Warn, format!("🛡️ BLOCKED IP: {}", ip)));
-                                }
+                        if let Some(ip) = src_ip_check {
+                            if wf_net.is_blocked_ip(ip) {
+                                should_block = true;
+                                block_reason = format!("Blocked Malicious IP: {}", ip);
+                                let _ = tx_net.send(EngineMessage::Log(LogLevel::Warn, format!("🛡️ BLOCKED IP: {}", ip)));
                             }
                         }
                         
                         // Payload text scan ("direct references in text")
                         if !should_block && packet.data.len() > 0 {
-                            if let Some(reason) = self.web_filter.check_payload(&packet.data) {
+                            if let Some(reason) = wf_net.check_payload(&packet.data) {
                                 should_block = true;
                                 block_reason = reason.clone();
-                                let _ = tx.send(EngineMessage::Log(LogLevel::Warn, format!("🛡️ BLOCKED CONTENT: {}", reason)));
+                                let _ = tx_net.send(EngineMessage::Log(LogLevel::Warn, format!("🛡️ BLOCKED CONTENT: {}", reason)));
                             }
                         }
                     }
