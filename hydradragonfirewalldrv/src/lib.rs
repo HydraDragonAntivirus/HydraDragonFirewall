@@ -109,3 +109,7 @@ pub unsafe extern "C" fn driver_unload(_driver_object: *mut DRIVER_OBJECT) {
     }
     PsSetCreateProcessNotifyRoutineEx(Some(process_notify_callback), 1); // TRUE (Unregistering)
 }
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}

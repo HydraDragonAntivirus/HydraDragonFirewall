@@ -15,3 +15,10 @@ wdk-build = "*"
 [dependencies]
 wdk = "*"
 wdk-sys = "*"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true

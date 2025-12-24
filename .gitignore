@@ -3,8 +3,8 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 
-# HydraDragonAntivirus optimzied website files
-/website
+# output
+/everything
 
 # User-specific files
 *.rsuser
