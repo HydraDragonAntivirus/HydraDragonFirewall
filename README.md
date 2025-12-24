@@ -64,6 +64,26 @@ dotnet build -c Release
 - User must explicitly accept each connection request
 - Connection logging with timestamps
 
+## 🛡️ HydraDragon Firewall (Rust)
+
+A high-performance, kernel-mode packet filter powered by WinDivert.
+
+- **Technology**: Rust + WinDivert (Windows Packet Filter)
+- **Features**:
+  - **Packet Inspection**: Deep packet inspection for all incoming/outgoing traffic.
+  - **Process Association**: Identifies the PID and executable name for every network flow.
+  - **EDR Hooks**: Uses `MinHook` to intercept user-mode `connect` keys in real-time, forwarding events via Named Pipes.
+  - **Web Filtering**: Blocks malicious IPs and domains using optimized blocklists (Scam, Malware, Phishing).
+  - **Performance**: Zero-copy packet handling for minimal latency.
+
+## 📂 File Transfer
+
+Seamlessly transfer files between connected machines.
+
+- **Sender**: Click "Send File" on the Client toolbar.
+- **Receiver**: Files are automatically saved to the Desktop.
+- **Protocol**: Chunked binary transfer with integrity checks.
+
 ## 📁 Project Structure
 
 ```

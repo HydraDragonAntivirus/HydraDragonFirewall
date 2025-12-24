@@ -191,6 +191,58 @@ namespace HydraDragonClient.Client
             }
         }
 
+        /// <summary>
+        /// Send a file to the remote server
+        /// </summary>
+        public async Task SendFileAsync(string filePath)
+        {
+            if (!IsConnected) return;
+
+            try
+            {
+                var fileInfo = new FileInfo(filePath);
+                var transferId = Guid.NewGuid().ToString();
+                
+                // 1. Send Request
+                var request = new FileTransferRequest
+                {
+                    TransferId = transferId,
+                    FileName = fileInfo.Name,
+                    FileSize = fileInfo.Length
+                };
+                await _channel!.SendAsync(request.Serialize());
+
+                // 2. Send Chunks
+                using var fs = File.OpenRead(filePath);
+                var buffer = new byte[40960]; // 40KB chunks
+                int bytesRead;
+                int chunkIndex = 0;
+
+                while ((bytesRead = await fs.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                {
+                    var chunkData = new byte[bytesRead];
+                    Array.Copy(buffer, chunkData, bytesRead);
+                    
+                    var chunk = new FileChunk
+                    {
+                        TransferId = transferId,
+                        Index = chunkIndex++,
+                        DataBase64 = Convert.ToBase64String(chunkData),
+                        IsLast = (fs.Position == fs.Length)
+                    };
+
+                    await _channel!.SendAsync(chunk.Serialize());
+                    
+                    // Small delay to prevent network congestion
+                    if (chunkIndex % 10 == 0) await Task.Delay(1);
+                }
+            }
+            catch (Exception ex)
+            {
+                Error?.Invoke(this, $"File transfer error: {ex.Message}");
+            }
+        }
+
         private async Task ReceiveFramesAsync(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested && IsConnected)

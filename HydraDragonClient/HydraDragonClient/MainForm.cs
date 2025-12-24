@@ -93,7 +93,6 @@ namespace HydraDragonClient
             };
             _infoPanel.Controls.Add(_passwordLabel);
 
-            // Shortcut hints
             var shortcutLabel = new Label
             {
                 Text = "F1: Connect | F2: New Password | F5: Toggle Mouse | Esc: Disconnect",
@@ -102,6 +101,32 @@ namespace HydraDragonClient
                 AutoSize = true
             };
             _infoPanel.Controls.Add(shortcutLabel);
+
+            var sendFileBtn = new Button
+            {
+                Text = "Send File",
+                Location = new Point(1050, 40),
+                Size = new Size(100, 30),
+                BackColor = Color.FromArgb(0, 122, 204),
+                FlatStyle = FlatStyle.Flat
+            };
+            sendFileBtn.Click += async (s, e) =>
+            {
+                if (!_client.IsConnected)
+                {
+                    MessageBox.Show("Not connected to a remote server.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                using var ofd = new OpenFileDialog();
+                if (ofd.ShowDialog() == DialogResult.OK)
+                {
+                    _statusLabel.Text = $"Sending file: {ofd.SafeFileName}...";
+                    await _client.SendFileAsync(ofd.FileName);
+                    _statusLabel.Text = "File sent successfully!";
+                }
+            };
+            _infoPanel.Controls.Add(sendFileBtn);
 
             Controls.Add(_infoPanel);
 

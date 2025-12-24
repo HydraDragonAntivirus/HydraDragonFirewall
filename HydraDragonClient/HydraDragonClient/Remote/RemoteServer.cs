@@ -255,6 +255,8 @@ namespace HydraDragonClient.Remote
             }
         }
 
+        private readonly Dictionary<string, FileStream> _activeTransfers = new();
+
         private async Task HandleInputAsync(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested && (_activeClient?.IsConnected ?? false))
@@ -274,6 +276,38 @@ namespace HydraDragonClient.Remote
                             
                         case MouseInput mi when _settings.EnableMouse:
                             InputInjector.InjectMouse(mi, _capturer!.Width, _capturer.Height);
+                            break;
+
+                        case FileTransferRequest ftr:
+                            // Save to Desktop by default
+                            var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                            var savePath = Path.Combine(desktopPath, ftr.FileName);
+                            try
+                            {
+                                var fs = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, true);
+                                _activeTransfers[ftr.TransferId] = fs;
+                                StatusChanged?.Invoke(this, $"Receiving file: {ftr.FileName} ({ftr.FileSize / 1024} KB)");
+                            }
+                            catch (Exception ex)
+                            {
+                                Error?.Invoke(this, $"Failed to start file transfer: {ex.Message}");
+                            }
+                            break;
+
+                        case FileChunk fc:
+                            if (_activeTransfers.TryGetValue(fc.TransferId, out var fileStream))
+                            {
+                                var bytes = Convert.FromBase64String(fc.DataBase64);
+                                await fileStream.WriteAsync(bytes, 0, bytes.Length, ct);
+                                
+                                if (fc.IsLast)
+                                {
+                                    fileStream.Close();
+                                    await fileStream.DisposeAsync();
+                                    _activeTransfers.Remove(fc.TransferId);
+                                    StatusChanged?.Invoke(this, "File transfer complete");
+                                }
+                            }
                             break;
                             
                         case DisconnectMessage:

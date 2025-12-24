@@ -16,7 +16,9 @@ namespace HydraDragonClient.Protocol
         KeyboardInput = 4,
         MouseInput = 5,
         Disconnect = 6,
-        Heartbeat = 7
+        Heartbeat = 7,
+        FileTransferRequest = 8,
+        FileChunk = 9
     }
 
     /// <summary>
@@ -60,6 +62,8 @@ namespace HydraDragonClient.Protocol
                 MessageType.MouseInput => JsonSerializer.Deserialize<MouseInput>(json),
                 MessageType.Disconnect => JsonSerializer.Deserialize<DisconnectMessage>(json),
                 MessageType.Heartbeat => JsonSerializer.Deserialize<Heartbeat>(json),
+                MessageType.FileTransferRequest => JsonSerializer.Deserialize<FileTransferRequest>(json),
+                MessageType.FileChunk => JsonSerializer.Deserialize<FileChunk>(json),
                 _ => null
             };
         }
@@ -150,5 +154,28 @@ namespace HydraDragonClient.Protocol
     {
         public override MessageType Type => MessageType.Heartbeat;
         public long Timestamp { get; set; }
+    }
+
+    /// <summary>
+    /// Request to start a file transfer
+    /// </summary>
+    public class FileTransferRequest : ProtocolMessage
+    {
+        public override MessageType Type => MessageType.FileTransferRequest;
+        public string TransferId { get; set; } = "";
+        public string FileName { get; set; } = "";
+        public long FileSize { get; set; }
+    }
+
+    /// <summary>
+    /// Chunk of file data
+    /// </summary>
+    public class FileChunk : ProtocolMessage
+    {
+        public override MessageType Type => MessageType.FileChunk;
+        public string TransferId { get; set; } = "";
+        public int Index { get; set; }
+        public string DataBase64 { get; set; } = "";
+        public bool IsLast { get; set; }
     }
 }

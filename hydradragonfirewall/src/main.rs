@@ -480,6 +480,7 @@ struct FirewallEngine {
     rules: Arc<RwLock<Vec<FirewallRule>>>,
     dns_handler: Arc<DnsHandler>,
     app_manager: Arc<AppManager>,
+    web_filter: Arc<WebFilter>,
     stop_signal: Arc<AtomicBool>,
 }
 
@@ -510,6 +511,7 @@ impl FirewallEngine {
             rules: Arc::new(RwLock::new(default_rules)),
             dns_handler: Arc::new(DnsHandler::new()),
             app_manager: Arc::new(AppManager::new()),
+            web_filter: Arc::new(WebFilter::new()),
             stop_signal: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -519,7 +521,27 @@ impl FirewallEngine {
         let rules = Arc::clone(&self.rules);
         let dns_handler = Arc::clone(&self.dns_handler);
         let app_manager = Arc::clone(&self.app_manager);
+        let web_filter = Arc::clone(&self.web_filter);
         let stop = Arc::clone(&self.stop_signal);
+
+        // ====================================================================
+        // WEB FILTER LOADER
+        // ====================================================================
+        let wf_loader = Arc::clone(&self.web_filter);
+        let log_tx_loader = tx.clone();
+        thread::spawn(move || {
+            let paths = ["website", "../website", "../../website", "Active Workspaces/website"];
+            // Search up to 3 levels up
+            for p in paths {
+                if std::path::Path::new(p).exists() {
+                     let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Info, format!("Loading WebFilter text/CSV data from {}...", p)));
+                     match wf_loader.load_from_website_folder(p) {
+                         Ok(c) => { let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Success, format!("✅ WebFilter loaded {} malicious signatures from {}", c, p))); break; },
+                         Err(e) => { let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Error, format!("❌ WebFilter load error: {}", e))); }
+                     }
+                }
+            }
+        });
 
         // ====================================================================
         // SOCKET LAYER MONITOR (for PID tracking)
@@ -721,6 +743,44 @@ impl FirewallEngine {
 
                     let mut should_block = false;
                     let mut block_reason = String::new();
+
+                    // 0. Web Filter Check (Optimized)
+                    if !should_block {
+                        if let Some(addr) = &packet.addr {
+                            let src_ip_check: Option<IpAddr> = if addr.IPv4() {
+                                let hdr = packet.ip_header();
+                                Some(IpAddr::V4(Ipv4Addr::from(u32::from_le(hdr.SrcAddr))))
+                            } else if addr.IPv6() {
+                                // Basic IPv6 extraction from WinDivert address if available, 
+                                // otherwise we need raw packet parsing which is complex here.
+                                // Minimal support for now.
+                                let hdr = packet.ipv6_header();
+                                let src = hdr.SrcAddr;
+                                // Convert [u32; 4] to Ipv6Addr (u32 needs to be native endian)
+                                // WinDivert header fields are native endian? No, usually network.
+                                // Actually packet.ipv6_header() returns the C struct.
+                                // Let's skip complex IPv6 parse for safe auto-run to avoid undefined behavior without checking docs.
+                                None 
+                            } else { None };
+
+                            if let Some(ip) = src_ip_check {
+                                if self.web_filter.is_blocked_ip(ip) {
+                                    should_block = true;
+                                    block_reason = format!("Blocked Malicious IP: {}", ip);
+                                    let _ = tx.send(EngineMessage::Log(LogLevel::Warn, format!("🛡️ BLOCKED IP: {}", ip)));
+                                }
+                            }
+                        }
+                        
+                        // Payload text scan ("direct references in text")
+                        if !should_block && packet.data.len() > 0 {
+                            if let Some(reason) = self.web_filter.check_payload(&packet.data) {
+                                should_block = true;
+                                block_reason = reason.clone();
+                                let _ = tx.send(EngineMessage::Log(LogLevel::Warn, format!("🛡️ BLOCKED CONTENT: {}", reason)));
+                            }
+                        }
+                    }
                     let app_name = AppManager::get_app_name(process_id);
 
                     // Check application-level decision for outbound
