@@ -6,13 +6,11 @@ use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::{Ipv4Addr, IpAddr, Ipv6Addr};
+use std::net::{Ipv4Addr, IpAddr};
 
 // ============================================================================
 mod injector;
 mod web_filter;
-
-use injector::Injector;
 use web_filter::WebFilter;
 
 // ============================================================================
@@ -106,19 +104,16 @@ impl FirewallRule {
         if !self.enabled {
             return false;
         }
-
         if let Some(ref proto) = self.protocol {
             if proto != &packet.protocol {
                 return false;
             }
         }
-
         if let Some(port) = self.dst_port {
             if port != packet.dst_port {
                 return false;
             }
         }
-
         true
     }
 }
@@ -169,7 +164,7 @@ impl DnsHandler {
         blocked.insert("hack".to_string());
         blocked.insert("exploit".to_string());
         blocked.insert("phish".to_string());
-        
+
         Self {
             queries: RwLock::new(VecDeque::new()),
             blocked_domains: RwLock::new(blocked),
@@ -179,17 +174,17 @@ impl DnsHandler {
     fn should_block(&self, domain: &str) -> bool {
         let blocked = self.blocked_domains.read().unwrap();
         let domain_lower = domain.to_lowercase();
-        
-        // 1. Static Blocklist check
+
+        // 1. Static Blocklist
         for pattern in blocked.iter() {
             if domain_lower.contains(pattern) {
                 return true;
             }
         }
 
-        // 2. DNS Tunneling / Exfiltration Heuristics (COMODO Leaktest 21)
+        // 2. DNS Tunneling / Exfiltration Heuristics
         if domain_lower.len() > 64 {
-            return true; 
+            return true;
         }
 
         let parts: Vec<&str> = domain_lower.split('.').collect();
@@ -240,15 +235,20 @@ struct AppManager {
 impl AppManager {
     fn new() -> Self {
         let mut decisions = HashMap::new();
-        // Pre-approve system processes
+        // Pre-approve system processes with FULL PATHS to prevent malware abuse
         decisions.insert("system".to_string(), AppDecision::Allow);
-        decisions.insert("svchost.exe".to_string(), AppDecision::Allow);
-        decisions.insert("dns.exe".to_string(), AppDecision::Allow);
-        decisions.insert("services.exe".to_string(), AppDecision::Allow);
-        decisions.insert("lsass.exe".to_string(), AppDecision::Allow);
-        decisions.insert("wininit.exe".to_string(), AppDecision::Allow);
-        decisions.insert("csrss.exe".to_string(), AppDecision::Allow);
-        
+        decisions.insert("c:\\windows\\system32\\svchost.exe".to_string(), AppDecision::Allow);
+        decisions.insert("c:\\windows\\system32\\services.exe".to_string(), AppDecision::Allow);
+        decisions.insert("c:\\windows\\system32\\lsass.exe".to_string(), AppDecision::Allow);
+        decisions.insert("c:\\windows\\system32\\wininit.exe".to_string(), AppDecision::Allow);
+        decisions.insert("c:\\windows\\system32\\csrss.exe".to_string(), AppDecision::Allow);
+        decisions.insert("c:\\windows\\system32\\smss.exe".to_string(), AppDecision::Allow);
+        decisions.insert("c:\\windows\\system32\\winlogon.exe".to_string(), AppDecision::Allow);
+        decisions.insert("c:\\windows\\system32\\dwm.exe".to_string(), AppDecision::Allow);
+        decisions.insert("c:\\windows\\system32\\spoolsv.exe".to_string(), AppDecision::Allow);
+        decisions.insert("c:\\windows\\system32\\dns.exe".to_string(), AppDecision::Allow);
+        decisions.insert("c:\\windows\\explorer.exe".to_string(), AppDecision::Allow);
+
         Self {
             decisions: RwLock::new(decisions),
             pending: RwLock::new(VecDeque::new()),
@@ -258,11 +258,13 @@ impl AppManager {
     }
 
     fn update_port_mapping(&self, port: u16, pid: u32) {
-        if port == 0 || pid == 0 { return; }
+        if port == 0 || pid == 0 {
+            return;
+        }
         let mut map = self.port_map.write().unwrap();
         map.insert(port, pid);
     }
-    
+
     fn get_pid_for_port(&self, port: u16) -> Option<u32> {
         self.port_map.read().unwrap().get(&port).cloned()
     }
@@ -282,8 +284,10 @@ impl AppManager {
                 if !handle.is_null() {
                     let mut buffer: [u16; 260] = [0; 260];
                     let mut size = 260u32;
-                    if QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size) != 0 {
-                        CloseHandle(handle);
+                    let success = QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size) != 0;
+                    CloseHandle(handle);
+                    
+                    if success {
                         let path = OsString::from_wide(&buffer[..size as usize]);
                         if let Some(path_str) = path.to_str() {
                             if let Some(name) = std::path::Path::new(path_str).file_name() {
@@ -291,34 +295,31 @@ impl AppManager {
                             }
                         }
                     }
-                    CloseHandle(handle);
                 }
             }
         }
-        
+
         format!("PID:{}", process_id)
     }
 
     fn check_app(&self, packet: &PacketInfo) -> AppDecision {
         let mut pid = packet.process_id;
-        
-        // If PID is 0 (from NETWORK layer), try to resolve via port mapping
+
+        // If PID is 0, try to resolve via port mapping
         if pid == 0 {
             if packet.outbound {
-                // Outbound: src_port is local
                 if let Some(p) = self.get_pid_for_port(packet.src_port) {
                     pid = p;
                 }
             } else {
-                // Inbound: dst_port is local
                 if let Some(p) = self.get_pid_for_port(packet.dst_port) {
                     pid = p;
                 }
             }
         }
-        
+
         let app_name = Self::get_app_name(pid).to_lowercase();
-        
+
         // Check if we have a decision
         {
             let decisions = self.decisions.read().unwrap();
@@ -326,7 +327,7 @@ impl AppManager {
                 return decision.clone();
             }
         }
-        
+
         // Check if already pending
         {
             let known = self.known_apps.read().unwrap();
@@ -334,13 +335,13 @@ impl AppManager {
                 return AppDecision::Pending;
             }
         }
-        
+
         // New app - add to pending
         {
             let mut known = self.known_apps.write().unwrap();
             known.insert(app_name.clone());
         }
-        
+
         {
             let mut pending = self.pending.write().unwrap();
             pending.push_back(PendingApp {
@@ -351,18 +352,16 @@ impl AppManager {
                 protocol: packet.protocol.clone(),
             });
         }
-        
+
         AppDecision::Pending
     }
 
     fn set_decision(&self, app_name: &str, decision: AppDecision) {
         let name_lower = app_name.to_lowercase();
-        
         {
             let mut decisions = self.decisions.write().unwrap();
             decisions.insert(name_lower.clone(), decision);
         }
-        
         {
             let mut pending = self.pending.write().unwrap();
             pending.retain(|p| p.name.to_lowercase() != name_lower);
@@ -410,6 +409,7 @@ fn parse_packet(data: &[u8], outbound: bool, process_id: u32) -> Option<PacketIn
 
     let src_ip = Ipv4Addr::new(data[12], data[13], data[14], data[15]);
     let dst_ip = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
+
     let ip_header_len = ((data[0] & 0x0F) as usize) * 4;
 
     let (src_port, dst_port) = if ip_header_len + 4 <= data.len() {
@@ -441,7 +441,7 @@ fn parse_packet(data: &[u8], outbound: bool, process_id: u32) -> Option<PacketIn
 fn parse_dns_query(data: &[u8], offset: usize) -> Option<String> {
     let mut domain = String::new();
     let mut pos = offset + 12;
-    
+
     if pos >= data.len() {
         return None;
     }
@@ -450,7 +450,7 @@ fn parse_dns_query(data: &[u8], offset: usize) -> Option<String> {
         if pos >= data.len() {
             return None;
         }
-        
+
         let len = data[pos] as usize;
         if len == 0 {
             break;
@@ -458,16 +458,16 @@ fn parse_dns_query(data: &[u8], offset: usize) -> Option<String> {
         if len > 63 {
             return None;
         }
-        
+
         pos += 1;
         if pos + len > data.len() {
             return None;
         }
-        
+
         if !domain.is_empty() {
             domain.push('.');
         }
-        
+
         for i in 0..len {
             if pos + i < data.len() {
                 let c = data[pos + i];
@@ -476,7 +476,7 @@ fn parse_dns_query(data: &[u8], offset: usize) -> Option<String> {
                 }
             }
         }
-        
+
         pos += len;
     }
 
@@ -511,7 +511,7 @@ struct FirewallEngine {
 impl FirewallEngine {
     fn new() -> Self {
         let mut default_rules = Vec::new();
-        
+
         default_rules.push(FirewallRule {
             name: "Block ICMP (Ping)".to_string(),
             enabled: true,
@@ -541,70 +541,172 @@ impl FirewallEngine {
     }
 
     fn start(&self, tx: Sender<EngineMessage>) {
-        let stats = Arc::clone(&self.stats);
-        let rules = Arc::clone(&self.rules);
-        let dns_handler = Arc::clone(&self.dns_handler);
-        let app_manager = Arc::clone(&self.app_manager);
-        let web_filter = Arc::clone(&self.web_filter);
-        let stop = Arc::clone(&self.stop_signal);
+        let _stats = Arc::clone(&self.stats);
+        let _rules = Arc::clone(&self.rules);
+        let _dns_handler = Arc::clone(&self.dns_handler);
+        let _app_manager = Arc::clone(&self.app_manager);
+        let _web_filter = Arc::clone(&self.web_filter);
+        let _stop = Arc::clone(&self.stop_signal);
 
-        // ====================================================================
-        // WEB FILTER LOADER
+        // ==================================================================== 
+        // WEB FILTER LOADER - Optimized CSV only
         // ====================================================================
         let wf_loader = Arc::clone(&self.web_filter);
         let log_tx_loader = tx.clone();
         thread::spawn(move || {
-            let paths = ["website", "../website", "../../website", "Active Workspaces/website"];
-            // Search up to 3 levels up
-            for p in paths {
-                if std::path::Path::new(p).exists() {
-                     let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Info, format!("Loading WebFilter text/CSV data from {}...", p)));
-                     match wf_loader.load_from_website_folder(p) {
-                         Ok(c) => { let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Success, format!("✅ WebFilter loaded {} malicious signatures from {}", c, p))); break; },
-                         Err(e) => { let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Error, format!("❌ WebFilter load error: {}", e))); }
-                     }
+            use std::path::PathBuf;
+            use std::fs;
+            
+            // Try multiple absolute and relative paths
+            let mut paths = Vec::new();
+            
+            // Get current executable directory
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(exe_dir) = exe_path.parent() {
+                    paths.push(exe_dir.join("website"));
+                    paths.push(exe_dir.join("../website"));
+                    paths.push(exe_dir.join("../../website"));
                 }
+            }
+            
+            // Get current working directory
+            if let Ok(cwd) = std::env::current_dir() {
+                paths.push(cwd.join("website"));
+                paths.push(cwd.join("../website"));
+                paths.push(cwd.join("../../website"));
+                paths.push(cwd.join("Active Workspaces/website"));
+            }
+            
+            // Common development paths
+            if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+                let home_path = PathBuf::from(home);
+                paths.push(home_path.join("Documents/HydraDragon/website"));
+                paths.push(home_path.join("Desktop/HydraDragon/website"));
+                paths.push(home_path.join("Projects/HydraDragon/website"));
+            }
+            
+            // Absolute paths for malware databases
+            paths.push(PathBuf::from("C:/MalwareDB/website"));
+            paths.push(PathBuf::from("C:/Program Files/HydraDragon/website"));
+            paths.push(PathBuf::from("C:/ProgramData/HydraDragon/website"));
+            
+            let mut loaded = false;
+            let mut total_loaded = 0;
+            
+            for base_path in paths {
+                if !base_path.exists() {
+                    continue;
+                }
+                
+                let path_str = base_path.to_string_lossy().to_string();
+                let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Info, 
+                    format!("Scanning for CSV files in: {}...", path_str)));
+                
+                // Scan for CSV files only
+                if let Ok(entries) = fs::read_dir(&base_path) {
+                    let csv_files: Vec<PathBuf> = entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .filter(|p| {
+                            p.is_file() && 
+                            p.extension()
+                                .and_then(|ext| ext.to_str())
+                                .map(|ext| ext.eq_ignore_ascii_case("csv"))
+                                .unwrap_or(false)
+                        })
+                        .collect();
+                    
+                    if csv_files.is_empty() {
+                        let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Warning, 
+                            format!("⚠️ No CSV files found in {}", path_str)));
+                        continue;
+                    }
+                    
+                    let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Info, 
+                        format!("Found {} CSV file(s) in {}", csv_files.len(), path_str)));
+                    
+                    // Load each CSV file
+                    for csv_file in csv_files {
+                        let _file_name = csv_file.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown");
+                        
+                        // Use load_from_website_folder for the parent directory
+                        // This assumes WebFilter can load individual files from a directory
+                        match wf_loader.load_from_website_folder(&path_str) {
+                            Ok(count) => {
+                                total_loaded = count;
+                                let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Success, 
+                                    format!("✅ Loaded {} entries from CSV files", count)));
+                                loaded = true;
+                                break;
+                            },
+                            Err(e) => {
+                                let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Warning, 
+                                    format!("⚠️ Failed to load CSV files: {}", e)));
+                            }
+                        }
+                    }
+                    
+                    if loaded {
+                        let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Success, 
+                            format!("✅ WebFilter loaded {} total malicious signatures from {}", 
+                                total_loaded, path_str)));
+                        break;
+                    }
+                }
+            }
+            
+            if !loaded {
+                let _ = log_tx_loader.send(EngineMessage::Log(LogLevel::Warning, 
+                    "⚠️ WebFilter database not found. Firewall running with limited protection.".into()));
             }
         });
 
-        // ====================================================================
-        // SOCKET LAYER MONITOR (for PID tracking)
+        // ==================================================================== 
+        // SOCKET LAYER MONITOR (for PID tracking) - FIXED
         // ====================================================================
         let am_socket = Arc::clone(&self.app_manager);
         let stop_socket = Arc::clone(&self.stop_signal);
         thread::spawn(move || {
-            // Setup flags separately to avoid builder chaining type issues
             let flags = WinDivertFlags::new();
             flags.set_sniff();
             flags.set_recv_only();
-            let handle_result = WinDivert::socket("true", 0, flags);
             
-            if let Ok(handle) = handle_result {
-                while !stop_socket.load(Ordering::Relaxed) {
-                    // Socket layer has no data payload, so recv_ex likely takes batch size (usize)
-                    // based on build error "expected usize"
-                    if let Ok(packets) = handle.recv_ex(10) {
-                        for packet in packets {
-                            // Extract PID and Port from socket event
-                            // Address type for SocketLayer should have these methods
-                            let addr = &packet.address;
-                            let pid = addr.process_id(); 
-                            let port = addr.local_port();
+            if let Ok(handle) = WinDivert::socket("true", 0, flags) {
+                let mut consecutive_errors = 0;
+                const MAX_ERRORS: u32 = 100;
+                
+                while !stop_socket.load(Ordering::Relaxed) && consecutive_errors < MAX_ERRORS {
+                    match handle.recv_ex(10) {
+                        Ok(packets) => {
+                            consecutive_errors = 0;
                             
-                            if pid > 0 && port > 0 {
-                                am_socket.update_port_mapping(port, pid);
+                            for packet in packets {
+                                let addr = &packet.address;
+                                let pid = addr.process_id();
+                                let port = addr.local_port();
+                                
+                                if pid > 0 && port > 0 {
+                                    am_socket.update_port_mapping(port, pid);
+                                }
                             }
                         }
-                    } else {
-                        // Short sleep on error/empty to prevent tight loop if failing
-                        thread::sleep(Duration::from_millis(50));
+                        Err(_) => {
+                            consecutive_errors += 1;
+                            thread::sleep(Duration::from_millis(50));
+                        }
                     }
+                }
+                
+                if consecutive_errors >= MAX_ERRORS {
+                    eprintln!("Socket layer monitor stopped due to excessive errors");
                 }
             }
         });
 
-        // ====================================================================
-        // FLOW LAYER MONITOR (for Connection PID tracking)
+        // ==================================================================== 
+        // FLOW LAYER MONITOR (for Connection PID tracking) - FIXED
         // ====================================================================
         let am_flow = Arc::clone(&self.app_manager);
         let stop_flow = Arc::clone(&self.stop_signal);
@@ -612,112 +714,147 @@ impl FirewallEngine {
             let flags = WinDivertFlags::new();
             flags.set_sniff();
             flags.set_recv_only();
-            let handle_result = WinDivert::flow("true", 0, flags);
             
-            if let Ok(handle) = handle_result {
-                while !stop_flow.load(Ordering::Relaxed) {
-                    if let Ok(packets) = handle.recv_ex(10) {
-                        for packet in packets {
-                            let addr = &packet.address;
-                            let pid = addr.process_id();
-                            let port = addr.local_port();
+            if let Ok(handle) = WinDivert::flow("true", 0, flags) {
+                let mut consecutive_errors = 0;
+                const MAX_ERRORS: u32 = 100;
+                
+                while !stop_flow.load(Ordering::Relaxed) && consecutive_errors < MAX_ERRORS {
+                    match handle.recv_ex(10) {
+                        Ok(packets) => {
+                            consecutive_errors = 0;
                             
-                            if pid > 0 && port > 0 {
-                                am_flow.update_port_mapping(port, pid);
+                            for packet in packets {
+                                let addr = &packet.address;
+                                let pid = addr.process_id();
+                                let port = addr.local_port();
+                                
+                                if pid > 0 && port > 0 {
+                                    am_flow.update_port_mapping(port, pid);
+                                }
                             }
                         }
-                    } else {
-                        thread::sleep(Duration::from_millis(50));
+                        Err(_) => {
+                            consecutive_errors += 1;
+                            thread::sleep(Duration::from_millis(50));
+                        }
                     }
                 }
             }
         });
 
-        // ====================================================================
-        // NAMED PIPE SERVER (IPC for Hooked DLLs)
+        // ==================================================================== 
+        // NAMED PIPE SERVER (IPC for Hooked DLLs) - FIXED
         // ====================================================================
         let _am_pipe = Arc::clone(&self.app_manager);
         let log_tx_pipe = tx.clone();
+        let stop_pipe = Arc::clone(&self.stop_signal);
         
         thread::spawn(move || {
-            use windows::Win32::System::Pipes::{CreateNamedPipeA, ConnectNamedPipe, DisconnectNamedPipe};
-            use windows::Win32::Foundation::CloseHandle;
-            
-            let pipe_name = windows::core::s!("\\\\.\\pipe\\HydraDragonFirewall");
-            
-            loop {
-                unsafe {
-                    // Manual constants
-                    const PIPE_ACCESS_DUPLEX: u32 = 3;
-                    const PIPE_TYPE_MESSAGE: u32 = 4;
-                    const PIPE_READMODE_MESSAGE: u32 = 2;
-                    const PIPE_WAIT: u32 = 0;
-                    const PIPE_UNLIMITED_INSTANCES: u32 = 255;
-
-                    // Use transmute to coerce u32 into required newtypes
-                    let pipe_handle_res = CreateNamedPipeA(
-                        pipe_name,
-                        std::mem::transmute(PIPE_ACCESS_DUPLEX),
-                        std::mem::transmute(PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT),
-                        PIPE_UNLIMITED_INSTANCES,
-                        512,
-                        512,
-                        0,
-                        None
-                    );
-                    
-                    if let Ok(pipe_handle) = pipe_handle_res {
-                        if !pipe_handle.is_invalid() {
-                            // Connect
-                            let connect_res = ConnectNamedPipe(pipe_handle, None);
-                            let mut connected = false;
-                            
-                            if connect_res.is_ok() {
-                                connected = true;
-                            } else {
-                                let err = connect_res.unwrap_err();
-                                // Check for ERROR_PIPE_CONNECTED
-                                if err.code() == windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_PIPE_CONNECTED.0) {
-                                     connected = true;
+            #[cfg(windows)]
+            {
+                use windows::Win32::System::Pipes::{CreateNamedPipeA, ConnectNamedPipe, DisconnectNamedPipe, NAMED_PIPE_MODE};
+                use windows::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
+                use windows::Win32::Storage::FileSystem::ReadFile;
+                
+                let pipe_name = windows::core::s!("\\\\.\\pipe\\HydraDragonFirewall");
+                
+                // Constants - properly defined with correct types
+                const PIPE_ACCESS_DUPLEX: u32 = 0x00000003;
+                const PIPE_TYPE_MESSAGE: u32 = 0x00000004;
+                const PIPE_READMODE_MESSAGE: u32 = 0x00000002;
+                const PIPE_WAIT: u32 = 0x00000000;
+                const PIPE_UNLIMITED_INSTANCES: u32 = 255;
+                
+                let mut retry_count = 0;
+                const MAX_RETRIES: u32 = 10;
+                
+                while !stop_pipe.load(Ordering::Relaxed) && retry_count < MAX_RETRIES {
+                    unsafe {
+                        let pipe_handle_result = CreateNamedPipeA(
+                            pipe_name,
+                            windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(PIPE_ACCESS_DUPLEX),
+                            NAMED_PIPE_MODE(PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT),
+                            PIPE_UNLIMITED_INSTANCES,
+                            512,
+                            512,
+                            0,
+                            None
+                        );
+                        
+                        match pipe_handle_result {
+                            Ok(pipe_handle) if pipe_handle != INVALID_HANDLE_VALUE => {
+                                retry_count = 0;
+                                
+                                let connect_result = ConnectNamedPipe(pipe_handle, None);
+                                let mut connected = false;
+                                
+                                if connect_result.is_ok() {
+                                    connected = true;
+                                } else if let Err(e) = connect_result {
+                                    if e.code().0 as u32 == ERROR_PIPE_CONNECTED.0 {
+                                        connected = true;
+                                    }
                                 }
+                                
+                                if connected {
+                                    let mut buffer = [0u8; 512];
+                                    let mut bytes_read = 0u32;
+                                    
+                                    let read_result = ReadFile(
+                                        pipe_handle,
+                                        Some(&mut buffer),
+                                        Some(&mut bytes_read),
+                                        None
+                                    );
+                                    
+                                    if read_result.is_ok() && bytes_read > 0 {
+                                        let msg = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
+                                        let _ = log_tx_pipe.send(EngineMessage::Log(
+                                            LogLevel::Info,
+                                            format!("🪝 HOOK: {}", msg.trim())
+                                        ));
+                                    }
+                                    
+                                    let _ = DisconnectNamedPipe(pipe_handle);
+                                }
+                                
+                                let _ = CloseHandle(pipe_handle);
+                                thread::sleep(Duration::from_millis(50));
                             }
-
-                            if connected {
-                                 let mut buffer = [0u8; 512];
-                                 let mut bytes_read = 0;
-                                 let read_res = windows::Win32::Storage::FileSystem::ReadFile(
-                                     pipe_handle,
-                                     Some(&mut buffer),
-                                     Some(&mut bytes_read),
-                                     None
-                                 );
-                                 
-                                 if read_res.is_ok() && bytes_read > 0 {
-                                     let msg = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
-                                     let _ = log_tx_pipe.send(EngineMessage::Log(LogLevel::Info, format!("🪝 HOOK: {}", msg)));
-                                 }
-                                 
-                                 let _ = DisconnectNamedPipe(pipe_handle);
+                            _ => {
+                                retry_count += 1;
+                                
+                                if retry_count >= MAX_RETRIES {
+                                    let _ = log_tx_pipe.send(EngineMessage::Log(
+                                        LogLevel::Warning,
+                                        "⚠️ Named pipe server failed after max retries".into()
+                                    ));
+                                    break;
+                                }
+                                
+                                thread::sleep(Duration::from_millis(100 * retry_count as u64));
                             }
-                            let _ = CloseHandle(pipe_handle);
-                        } else {
-                            thread::sleep(Duration::from_millis(100)); // Error backoff
                         }
-                    } else {
-                         thread::sleep(Duration::from_millis(100)); // Creation failed
                     }
                 }
+                
+                let _ = log_tx_pipe.send(EngineMessage::Log(
+                    LogLevel::Info,
+                    "Named pipe server stopped".into()
+                ));
+            }
+            
+            #[cfg(not(windows))]
+            {
+                let _ = log_tx_pipe.send(EngineMessage::Log(
+                    LogLevel::Warning,
+                    "Named pipe server only available on Windows".into()
+                ));
             }
         });
 
-        // ====================================================================
-        // NETWORK LAYER (Main Firewall Logic)
-        // ====================================================================
-        let app_manager = Arc::clone(&self.app_manager);
-        let web_filter = Arc::clone(&self.web_filter);
-        let stop = Arc::clone(&self.stop_signal);
-
-        // ====================================================================
+        // ==================================================================== 
         // NETWORK LAYER (Main Firewall Logic)
         // ====================================================================
         let am_net = Arc::clone(&self.app_manager);
@@ -729,20 +866,20 @@ impl FirewallEngine {
         let tx_net = tx.clone();
         
         thread::spawn(move || {
-            let _ = tx.send(EngineMessage::Log(LogLevel::Info, 
+            let _ = tx_net.send(EngineMessage::Log(LogLevel::Info, 
                 "Initializing WinDivert network driver...".into()));
-
+            
             let filter = "ip";
             let handle = match WinDivert::network(filter, 1000, WinDivertFlags::new()) {
                 Ok(h) => {
-                    let _ = tx.send(EngineMessage::Log(LogLevel::Success,
+                    let _ = tx_net.send(EngineMessage::Log(LogLevel::Success, 
                         "✅ WinDivert driver initialized".into()));
-                    let _ = tx.send(EngineMessage::Log(LogLevel::Success,
+                    let _ = tx_net.send(EngineMessage::Log(LogLevel::Success, 
                         "✅ Application-level filtering active".into()));
                     h
                 },
                 Err(e) => {
-                    let _ = tx.send(EngineMessage::Log(LogLevel::Error,
+                    let _ = tx_net.send(EngineMessage::Log(LogLevel::Error, 
                         format!("❌ WinDivert error: {}\n⚠️ Must run as Administrator!", e)));
                     return;
                 }
@@ -750,8 +887,8 @@ impl FirewallEngine {
 
             let mut buffer = vec![0u8; 65535];
             let mut counter = 0u64;
-
-            let _ = tx.send(EngineMessage::Log(LogLevel::Success,
+            
+            let _ = tx_net.send(EngineMessage::Log(LogLevel::Success, 
                 "🔥 Firewall protection ACTIVE".into()));
 
             while !stop_net.load(Ordering::Relaxed) {
@@ -769,7 +906,6 @@ impl FirewallEngine {
                     let data = &packet.data;
                     let addr = &packet.address;
                     let outbound = addr.outbound();
-                    // Use 0 as fallback - process_id may not be available in this windivert version
                     let process_id: u32 = 0;
 
                     let packet_info = match parse_packet(data, outbound, process_id) {
@@ -783,32 +919,35 @@ impl FirewallEngine {
                     let mut should_block = false;
                     let mut block_reason = String::new();
 
-                    // 0. Web Filter Check (Optimized)
+                    // Web Filter Check
                     if !should_block {
                         let ip_version = (packet.data[0] >> 4) & 0x0F;
                         let src_ip_check: Option<IpAddr> = if ip_version == 4 && packet.data.len() >= 20 {
-                            // IPv4 SrcAddr is at offset 12..16
                             let src_bytes = [packet.data[12], packet.data[13], packet.data[14], packet.data[15]];
                             Some(IpAddr::V4(Ipv4Addr::from(src_bytes)))
-                        } else { None };
+                        } else {
+                            None
+                        };
 
                         if let Some(ip) = src_ip_check {
                             if wf_net.is_blocked_ip(ip) {
                                 should_block = true;
                                 block_reason = format!("Blocked Malicious IP: {}", ip);
-                                let _ = tx_net.send(EngineMessage::Log(LogLevel::Warning, format!("🛡️ BLOCKED IP: {}", ip)));
+                                let _ = tx_net.send(EngineMessage::Log(LogLevel::Warning, 
+                                    format!("🛡️ BLOCKED IP: {}", ip)));
                             }
                         }
-                        
-                        // Payload text scan ("direct references in text")
+
                         if !should_block && packet.data.len() > 0 {
                             if let Some(reason) = wf_net.check_payload(&packet.data) {
                                 should_block = true;
                                 block_reason = reason.clone();
-                                let _ = tx_net.send(EngineMessage::Log(LogLevel::Warning, format!("🛡️ BLOCKED CONTENT: {}", reason)));
+                                let _ = tx_net.send(EngineMessage::Log(LogLevel::Warning, 
+                                    format!("🛡️ BLOCKED CONTENT: {}", reason)));
                             }
                         }
                     }
+
                     let app_name = AppManager::get_app_name(process_id);
 
                     // Check application-level decision for outbound
@@ -834,6 +973,7 @@ impl FirewallEngine {
                     // DNS analysis
                     if !should_block && packet_info.protocol == Protocol::UDP && packet_info.dst_port == 53 && outbound {
                         stats_net.dns_queries.fetch_add(1, Ordering::Relaxed);
+                        
                         let ip_hdr_len = ((data[0] & 0x0F) as usize) * 4;
                         let dns_offset = ip_hdr_len + 8;
                         
@@ -864,10 +1004,14 @@ impl FirewallEngine {
 
                     // Update stats
                     match packet_info.protocol {
-                        Protocol::TCP => { stats_net.tcp_connections.fetch_add(1, Ordering::Relaxed); },
-                        Protocol::ICMP if should_block => { stats_net.icmp_blocked.fetch_add(1, Ordering::Relaxed); },
+                        Protocol::TCP => {
+                            stats_net.tcp_connections.fetch_add(1, Ordering::Relaxed);
+                        },
+                        Protocol::ICMP if should_block => {
+                            stats_net.icmp_blocked.fetch_add(1, Ordering::Relaxed);
+                        },
                         _ => {}
-                    };
+                    }
 
                     if should_block {
                         stats_net.packets_blocked.fetch_add(1, Ordering::Relaxed);
@@ -937,10 +1081,8 @@ struct FirewallApp {
     engine: Option<Arc<FirewallEngine>>,
     rx: Option<Receiver<EngineMessage>>,
     running: bool,
-    
     logs: VecDeque<LogEntry>,
     blocked_packets: VecDeque<(PacketInfo, String)>,
-    
     total: u64,
     blocked: u64,
     allowed: u64,
@@ -948,7 +1090,6 @@ struct FirewallApp {
     dns_blocked: u64,
     icmp_blocked: u64,
     tcp_conns: u64,
-    
     tab: usize,
     show_app_prompt: bool,
     current_pending_app: Option<PendingApp>,
@@ -978,22 +1119,33 @@ impl Default for FirewallApp {
 
 impl FirewallApp {
     fn start(&mut self) {
-        if self.running { return; }
+        if self.running {
+            return;
+        }
 
         let (tx, rx) = channel();
         let engine = Arc::new(FirewallEngine::new());
         engine.start(tx);
-        
+
         self.engine = Some(engine);
         self.rx = Some(rx);
         self.running = true;
     }
 
     fn stop(&mut self) {
-        if !self.running { return; }
+        if !self.running {
+            return;
+        }
+
+        self.add_log(LogLevel::Info, "Stopping firewall...".into());
+
         if let Some(engine) = &self.engine {
             engine.stop();
         }
+
+        // Give threads time to clean up
+        thread::sleep(Duration::from_millis(500));
+
         self.running = false;
         self.add_log(LogLevel::Info, "Firewall stopped".into());
     }
@@ -1004,17 +1156,27 @@ impl FirewallApp {
             level,
             message,
         });
+
         if self.logs.len() > 1000 {
             self.logs.pop_front();
         }
     }
 
     fn process_messages(&mut self) {
-        // Collect messages first to avoid borrow conflict
         let messages: Vec<EngineMessage> = if let Some(rx) = &self.rx {
             let mut msgs = Vec::new();
-            while let Ok(msg) = rx.try_recv() {
-                msgs.push(msg);
+            let mut count = 0;
+            
+            const MAX_MESSAGES_PER_FRAME: usize = 100;
+            
+            while count < MAX_MESSAGES_PER_FRAME {
+                match rx.try_recv() {
+                    Ok(msg) => {
+                        msgs.push(msg);
+                        count += 1;
+                    }
+                    Err(_) => break,
+                }
             }
             msgs
         } else {
@@ -1076,7 +1238,7 @@ impl eframe::App for FirewallApp {
                             ui.label(egui::RichText::new("An application is requesting network access:")
                                 .size(14.0));
                             ui.add_space(15.0);
-                            
+
                             egui::Frame::new()
                                 .fill(egui::Color32::from_gray(40))
                                 .corner_radius(8.0)
@@ -1088,19 +1250,20 @@ impl eframe::App for FirewallApp {
                                             .size(18.0).strong().color(egui::Color32::WHITE));
                                     });
                                 });
-                            
+
                             ui.add_space(15.0);
                             ui.horizontal(|ui| {
                                 ui.label("Destination:");
                                 ui.label(egui::RichText::new(format!("{}:{}", app.dst_ip, app.dst_port))
                                     .color(egui::Color32::LIGHT_BLUE));
                             });
-                            
+
                             ui.add_space(20.0);
                             ui.horizontal(|ui| {
                                 if ui.add_sized([120.0, 40.0], 
-                                    egui::Button::new(egui::RichText::new("✅ Allow").size(16.0).color(egui::Color32::WHITE))
-                                        .fill(egui::Color32::from_rgb(34, 197, 94))
+                                    egui::Button::new(egui::RichText::new("✅ Allow").size(16.0)
+                                        .color(egui::Color32::WHITE))
+                                    .fill(egui::Color32::from_rgb(34, 197, 94))
                                 ).clicked() {
                                     if let Some(engine) = &self.engine {
                                         engine.allow_app(&app.name);
@@ -1109,12 +1272,13 @@ impl eframe::App for FirewallApp {
                                     self.show_app_prompt = false;
                                     self.current_pending_app = None;
                                 }
-                                
+
                                 ui.add_space(20.0);
-                                
-                                if ui.add_sized([120.0, 40.0],
-                                    egui::Button::new(egui::RichText::new("🚫 Block").size(16.0).color(egui::Color32::WHITE))
-                                        .fill(egui::Color32::from_rgb(220, 38, 38))
+
+                                if ui.add_sized([120.0, 40.0], 
+                                    egui::Button::new(egui::RichText::new("🚫 Block").size(16.0)
+                                        .color(egui::Color32::WHITE))
+                                    .fill(egui::Color32::from_rgb(220, 38, 38))
                                 ).clicked() {
                                     if let Some(engine) = &self.engine {
                                         engine.block_app(&app.name);
@@ -1133,15 +1297,19 @@ impl eframe::App for FirewallApp {
             ui.horizontal(|ui| {
                 ui.heading("🛡️ HydraDragon Firewall");
                 ui.separator();
-                
+
                 let (text, _color) = if self.running {
                     ("⏹ Stop", egui::Color32::from_rgb(220, 38, 38))
                 } else {
                     ("▶ Start", egui::Color32::from_rgb(34, 197, 94))
                 };
-                
+
                 if ui.button(egui::RichText::new(text).color(egui::Color32::WHITE)).clicked() {
-                    if self.running { self.stop(); } else { self.start(); }
+                    if self.running {
+                        self.stop();
+                    } else {
+                        self.start();
+                    }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1151,7 +1319,7 @@ impl eframe::App for FirewallApp {
                             .color(egui::Color32::YELLOW));
                         ui.separator();
                     }
-                    
+
                     if self.running {
                         ui.label(egui::RichText::new("● ACTIVE").color(egui::Color32::GREEN).strong());
                     } else {
@@ -1197,9 +1365,12 @@ impl FirewallApp {
             self.stat_box(ui, "DNS Queries", self.dns_queries, egui::Color32::LIGHT_BLUE);
             self.stat_box(ui, "DNS Blocked", self.dns_blocked, egui::Color32::RED);
             self.stat_box(ui, "ICMP Blocked", self.icmp_blocked, egui::Color32::RED);
+
             let block_rate = if self.total > 0 {
                 (self.blocked as f32 / self.total as f32 * 100.0) as u64
-            } else { 0 };
+            } else {
+                0
+            };
             self.stat_box(ui, "Block Rate %", block_rate, egui::Color32::YELLOW);
         });
 
@@ -1210,7 +1381,11 @@ impl FirewallApp {
             ui.heading("Recent DNS Queries");
             egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                 for query in engine.get_dns_queries() {
-                    let color = if query.blocked { egui::Color32::RED } else { egui::Color32::GREEN };
+                    let color = if query.blocked {
+                        egui::Color32::RED
+                    } else {
+                        egui::Color32::GREEN
+                    };
                     ui.horizontal(|ui| {
                         ui.colored_label(color, if query.blocked { "🚫" } else { "✅" });
                         ui.label(&query.domain);
@@ -1239,6 +1414,7 @@ impl FirewallApp {
 
         if let Some(engine) = &self.engine {
             let pending = engine.get_pending_apps();
+
             if pending.is_empty() {
                 ui.label("No applications pending approval.");
             } else {
@@ -1255,7 +1431,7 @@ impl FirewallApp {
                                     ui.label(egui::RichText::new(&app.name).strong());
                                     ui.label(format!("→ {}:{}", app.dst_ip, app.dst_port));
                                 });
-                                
+
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if ui.button("🚫 Block").clicked() {
                                         engine.block_app(&app.name);
@@ -1324,7 +1500,7 @@ fn main() -> Result<(), eframe::Error> {
             .with_title("HydraDragon Firewall"),
         ..Default::default()
     };
-    
+
     eframe::run_native(
         "HydraDragon Firewall",
         options,
