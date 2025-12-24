@@ -734,7 +734,7 @@ impl FirewallEngine {
             let _ = tx.send(EngineMessage::Log(LogLevel::Success,
                 "🔥 Firewall protection ACTIVE".into()));
 
-            while !stop.load(Ordering::Relaxed) {
+            while !stop_net.load(Ordering::Relaxed) {
                 let recv_result = handle.recv_ex(Some(&mut buffer), 0);
                 
                 let packets = match recv_result {
@@ -744,7 +744,7 @@ impl FirewallEngine {
 
                 for packet in packets {
                     counter += 1;
-                    stats.packets_total.fetch_add(1, Ordering::Relaxed);
+                    stats_net.packets_total.fetch_add(1, Ordering::Relaxed);
 
                     let data = &packet.data;
                     let addr = &packet.address;
@@ -755,7 +755,7 @@ impl FirewallEngine {
                     let packet_info = match parse_packet(data, outbound, process_id) {
                         Some(p) => p,
                         None => {
-                            stats.packets_blocked.fetch_add(1, Ordering::Relaxed);
+                            stats_net.packets_blocked.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
                     };
@@ -765,22 +765,18 @@ impl FirewallEngine {
 
                     // 0. Web Filter Check (Optimized)
                     if !should_block {
-                        let src_ip_check: Option<IpAddr> = if addr.IPv4() {
-                            let hdr = packet.ip_header();
-                            Some(IpAddr::V4(Ipv4Addr::from(u32::from_le(hdr.SrcAddr))))
-                        } else if addr.IPv6() {
-                            // Basic IPv6 extraction from WinDivert address if available
-                            let hdr = packet.ipv6_header();
-                            let src = hdr.SrcAddr;
-                            // Skipping complex IPv6 parse for now to avoid build issues without docs check
-                            None 
+                        let ip_version = (packet.data[0] >> 4) & 0x0F;
+                        let src_ip_check: Option<IpAddr> = if ip_version == 4 && packet.data.len() >= 20 {
+                            // IPv4 SrcAddr is at offset 12..16
+                            let src_bytes = [packet.data[12], packet.data[13], packet.data[14], packet.data[15]];
+                            Some(IpAddr::V4(Ipv4Addr::from(src_bytes)))
                         } else { None };
 
                         if let Some(ip) = src_ip_check {
                             if wf_net.is_blocked_ip(ip) {
                                 should_block = true;
                                 block_reason = format!("Blocked Malicious IP: {}", ip);
-                                let _ = tx_net.send(EngineMessage::Log(LogLevel::Warn, format!("🛡️ BLOCKED IP: {}", ip)));
+                                let _ = tx_net.send(EngineMessage::Log(LogLevel::Warning, format!("🛡️ BLOCKED IP: {}", ip)));
                             }
                         }
                         
@@ -789,7 +785,7 @@ impl FirewallEngine {
                             if let Some(reason) = wf_net.check_payload(&packet.data) {
                                 should_block = true;
                                 block_reason = reason.clone();
-                                let _ = tx_net.send(EngineMessage::Log(LogLevel::Warn, format!("🛡️ BLOCKED CONTENT: {}", reason)));
+                                let _ = tx_net.send(EngineMessage::Log(LogLevel::Warning, format!("🛡️ BLOCKED CONTENT: {}", reason)));
                             }
                         }
                     }
@@ -797,7 +793,7 @@ impl FirewallEngine {
 
                     // Check application-level decision for outbound
                     if outbound {
-                        let decision = app_manager.check_app(&packet_info);
+                        let decision = am_net.check_app(&packet_info);
                         match decision {
                             AppDecision::Block => {
                                 should_block = true;
@@ -806,9 +802,9 @@ impl FirewallEngine {
                             AppDecision::Pending => {
                                 should_block = true;
                                 block_reason = format!("App pending: {}", app_name);
-                                let pending = app_manager.get_pending();
+                                let pending = am_net.get_pending();
                                 if let Some(p) = pending.last() {
-                                    let _ = tx.send(EngineMessage::NewPendingApp(p.clone()));
+                                    let _ = tx_net.send(EngineMessage::NewPendingApp(p.clone()));
                                 }
                             },
                             AppDecision::Allow => {}
@@ -817,26 +813,26 @@ impl FirewallEngine {
 
                     // DNS analysis
                     if !should_block && packet_info.protocol == Protocol::UDP && packet_info.dst_port == 53 && outbound {
-                        stats.dns_queries.fetch_add(1, Ordering::Relaxed);
+                        stats_net.dns_queries.fetch_add(1, Ordering::Relaxed);
                         let ip_hdr_len = ((data[0] & 0x0F) as usize) * 4;
                         let dns_offset = ip_hdr_len + 8;
                         
                         if let Some(domain) = parse_dns_query(data, dns_offset) {
-                            if dns_handler.should_block(&domain) {
+                            if dh_net.should_block(&domain) {
                                 should_block = true;
                                 block_reason = format!("Blocked DNS: {}", domain);
-                                stats.dns_blocked.fetch_add(1, Ordering::Relaxed);
-                                dns_handler.log_query(domain.clone(), true);
-                                let _ = tx.send(EngineMessage::DnsBlocked(domain));
+                                stats_net.dns_blocked.fetch_add(1, Ordering::Relaxed);
+                                dh_net.log_query(domain.clone(), true);
+                                let _ = tx_net.send(EngineMessage::DnsBlocked(domain));
                             } else {
-                                dns_handler.log_query(domain, false);
+                                dh_net.log_query(domain, false);
                             }
                         }
                     }
 
                     // Apply firewall rules
                     if !should_block {
-                        let rules_guard = rules.read().unwrap();
+                        let rules_guard = rules_net.read().unwrap();
                         for rule in rules_guard.iter() {
                             if rule.matches(&packet_info) && rule.block {
                                 should_block = true;
@@ -848,26 +844,26 @@ impl FirewallEngine {
 
                     // Update stats
                     match packet_info.protocol {
-                        Protocol::TCP => { stats.tcp_connections.fetch_add(1, Ordering::Relaxed); },
-                        Protocol::ICMP if should_block => { stats.icmp_blocked.fetch_add(1, Ordering::Relaxed); },
+                        Protocol::TCP => { stats_net.tcp_connections.fetch_add(1, Ordering::Relaxed); },
+                        Protocol::ICMP if should_block => { stats_net.icmp_blocked.fetch_add(1, Ordering::Relaxed); },
                         _ => {}
                     };
 
                     if should_block {
-                        stats.packets_blocked.fetch_add(1, Ordering::Relaxed);
-                        let _ = tx.send(EngineMessage::PacketBlocked(packet_info, block_reason));
+                        stats_net.packets_blocked.fetch_add(1, Ordering::Relaxed);
+                        let _ = tx_net.send(EngineMessage::PacketBlocked(packet_info, block_reason));
                     } else {
-                        stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
+                        stats_net.packets_allowed.fetch_add(1, Ordering::Relaxed);
                         let _ = handle.send(&packet);
                     }
 
                     if counter % 100 == 0 {
-                        let _ = tx.send(EngineMessage::StatsUpdate);
+                        let _ = tx_net.send(EngineMessage::StatsUpdate);
                     }
                 }
             }
 
-            let _ = tx.send(EngineMessage::Log(LogLevel::Info, "Engine stopped".into()));
+            let _ = tx_net.send(EngineMessage::Log(LogLevel::Info, "Engine stopped".into()));
         });
     }
 
