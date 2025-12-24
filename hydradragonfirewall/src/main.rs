@@ -9,8 +9,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{Ipv4Addr, IpAddr};
 
 // ============================================================================
+// Module declarations - these files must exist in src/ directory
+// ============================================================================
 mod injector;
 mod web_filter;
+
+use injector::Injector;
 use web_filter::WebFilter;
 
 // ============================================================================
@@ -351,6 +355,31 @@ impl AppManager {
                 dst_port: packet.dst_port,
                 protocol: packet.protocol.clone(),
             });
+        }
+
+        // Try to inject monitoring DLL into the process
+        if pid > 0 && pid != 4 { // Don't inject into System process
+            // Get DLL path relative to executable
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(exe_dir) = exe_path.parent() {
+                    let dll_path = exe_dir.join("monitor.dll");
+                    if dll_path.exists() {
+                        let dll_path_str = dll_path.to_string_lossy().to_string();
+                        // Attempt injection in background (don't block firewall decision)
+                        let pid_copy = pid;
+                        thread::spawn(move || {
+                            match Injector::inject(pid_copy, &dll_path_str) {
+                                Ok(_) => {
+                                    eprintln!("✅ Successfully injected monitor.dll into PID {}", pid_copy);
+                                }
+                                Err(e) => {
+                                    eprintln!("⚠️ Failed to inject into PID {}: {}", pid_copy, e);
+                                }
+                            }
+                        });
+                    }
+                }
+            }
         }
 
         AppDecision::Pending
@@ -750,7 +779,10 @@ impl FirewallEngine {
         let log_tx_pipe = tx.clone();
         let stop_pipe = Arc::clone(&self.stop_signal);
         
-        thread::spawn(move || {
+        thread::Builder::new()
+            .name("pipe_server".to_string())
+            .stack_size(2 * 1024 * 1024) // 2MB stack for pipe server
+            .spawn(move || {
             #[cfg(windows)]
             {
                 use windows::Win32::System::Pipes::{CreateNamedPipeA, ConnectNamedPipe, DisconnectNamedPipe, NAMED_PIPE_MODE};
@@ -768,6 +800,8 @@ impl FirewallEngine {
                 
                 let mut retry_count = 0;
                 const MAX_RETRIES: u32 = 10;
+                let mut consecutive_failures = 0;
+                const MAX_CONSECUTIVE_FAILURES: u32 = 5;
                 
                 while !stop_pipe.load(Ordering::Relaxed) && retry_count < MAX_RETRIES {
                     unsafe {
@@ -785,6 +819,7 @@ impl FirewallEngine {
                         match pipe_handle_result {
                             Ok(pipe_handle) if pipe_handle != INVALID_HANDLE_VALUE => {
                                 retry_count = 0;
+                                consecutive_failures = 0;
                                 
                                 let connect_result = ConnectNamedPipe(pipe_handle, None);
                                 let mut connected = false;
@@ -820,10 +855,20 @@ impl FirewallEngine {
                                 }
                                 
                                 let _ = CloseHandle(pipe_handle);
-                                thread::sleep(Duration::from_millis(50));
+                                thread::sleep(Duration::from_millis(100));
                             }
                             _ => {
+                                consecutive_failures += 1;
                                 retry_count += 1;
+                                
+                                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                                    let _ = log_tx_pipe.send(EngineMessage::Log(
+                                        LogLevel::Warning,
+                                        "⚠️ Named pipe server experiencing issues, backing off".into()
+                                    ));
+                                    thread::sleep(Duration::from_secs(2));
+                                    consecutive_failures = 0;
+                                }
                                 
                                 if retry_count >= MAX_RETRIES {
                                     let _ = log_tx_pipe.send(EngineMessage::Log(
@@ -833,7 +878,7 @@ impl FirewallEngine {
                                     break;
                                 }
                                 
-                                thread::sleep(Duration::from_millis(100 * retry_count as u64));
+                                thread::sleep(Duration::from_millis(200));
                             }
                         }
                     }
@@ -852,7 +897,7 @@ impl FirewallEngine {
                     "Named pipe server only available on Windows".into()
                 ));
             }
-        });
+        }).expect("Failed to spawn pipe server thread");
 
         // ==================================================================== 
         // NETWORK LAYER (Main Firewall Logic)
@@ -1058,6 +1103,28 @@ impl FirewallEngine {
 
     fn allow_app(&self, app_name: &str) {
         self.app_manager.set_decision(app_name, AppDecision::Allow);
+        
+        // Try to inject monitor DLL when app is allowed
+        let pending = self.app_manager.get_pending();
+        if let Some(app) = pending.iter().find(|p| p.name.to_lowercase() == app_name.to_lowercase()) {
+            let pid = app.process_id;
+            if pid > 0 && pid != 4 {
+                if let Ok(exe_path) = std::env::current_exe() {
+                    if let Some(exe_dir) = exe_path.parent() {
+                        let dll_path = exe_dir.join("monitor.dll");
+                        if dll_path.exists() {
+                            let dll_path_str = dll_path.to_string_lossy().to_string();
+                            thread::spawn(move || {
+                                match Injector::inject(pid, &dll_path_str) {
+                                    Ok(_) => eprintln!("✅ Injected monitor into allowed app PID {}", pid),
+                                    Err(e) => eprintln!("⚠️ Injection failed for PID {}: {}", pid, e),
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn block_app(&self, app_name: &str) {
@@ -1101,8 +1168,8 @@ impl Default for FirewallApp {
             engine: None,
             rx: None,
             running: false,
-            logs: VecDeque::new(),
-            blocked_packets: VecDeque::new(),
+            logs: VecDeque::with_capacity(100),
+            blocked_packets: VecDeque::with_capacity(50),
             total: 0,
             blocked: 0,
             allowed: 0,
@@ -1494,6 +1561,9 @@ impl FirewallApp {
 // ============================================================================
 
 fn main() -> Result<(), eframe::Error> {
+    // Note: Stack size must be set at compile time via linker flags or at thread creation time
+    // For main thread, we rely on default stack size and use thread::Builder for worker threads
+    
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
