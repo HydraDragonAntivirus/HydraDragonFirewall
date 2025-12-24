@@ -180,11 +180,31 @@ impl DnsHandler {
         let blocked = self.blocked_domains.read().unwrap();
         let domain_lower = domain.to_lowercase();
         
+        // 1. Static Blocklist check
         for pattern in blocked.iter() {
             if domain_lower.contains(pattern) {
                 return true;
             }
         }
+
+        // 2. DNS Tunneling / Exfiltration Heuristics (COMODO Leaktest 21)
+        if domain_lower.len() > 64 {
+            return true; 
+        }
+
+        let parts: Vec<&str> = domain_lower.split('.').collect();
+        for part in parts {
+            if part.len() > 32 {
+                let mut unique_chars = HashSet::new();
+                for c in part.chars() {
+                    unique_chars.insert(c);
+                }
+                if unique_chars.len() as f32 / part.len() as f32 > 0.6 {
+                    return true;
+                }
+            }
+        }
+
         false
     }
 

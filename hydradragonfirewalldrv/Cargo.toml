@@ -1,39 +1,20 @@
 [package]
 name = "hydradragonfirewalldrv"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [package.metadata.wdk.driver-model]
-driver-type = "WDM"  # WDM (Windows Driver Model) is common for kernel-mode drivers
+driver-type = "WDM"
 
 [lib]
 crate-type = ["cdylib"]
 
 [build-dependencies]
-wdk-build = "0.5.1"
-
-[build]
-target = "x86_64-pc-windows-msvc"
+wdk-build = "*"
 
 [dependencies]
-wdk = "0.5.1"              # Windows Driver Kit crate
-wdk-macros = "0.5.1"        # Macros for working with WDK
-wdk-alloc = "0.5.1"         # Allocation helpers for the WDK
-wdk-panic = "0.5.1"         # Panic handler for WDK
-wdk-sys = "0.5.1"           # WDK sys bindings
-
-[unstable]
-build-std = ["core", "compiler_builtins"]
-build-std-features = ["panic_immediate_abort"]
-
-[features]
-default = []
-nightly = ["wdk/nightly", "wdk-sys/nightly"]
-
-[profile.dev]
-panic = "abort"
-lto = true
-
-[profile.release]
-panic = "abort"
-lto = true
+wdk = "*"
+wdk-macros = "*"
+wdk-alloc = "*"
+wdk-panic = "*"
+wdk-sys = "*"

@@ -7,37 +7,43 @@ use windows::Win32::Foundation::{BOOL, HINSTANCE, HANDLE};
 use windows::Win32::Networking::WinSock::{SOCKET, SOCKADDR};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 use windows::Win32::System::SystemServices::{DLL_PROCESS_ATTACH};
-use windows::Win32::Storage::FileSystem::{CreateFileA, WriteFile, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE, FILE_SHARE_READ};
+use windows::Win32::Storage::FileSystem::{WriteFile, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ};
+use windows::Win32::UI::WindowsAndMessaging::{HHOOK, HOOKPROC, WINDOWS_HOOK_ID};
+use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, WINEVENTPROC};
 
-// Raw MinHook FFI
-// We link to the minhook static library provided by the crate
-#[link(name = "minhook")]
-extern "system" {
+// Force linking to the minhook crate
+extern crate minhook;
+
+// Raw MinHook FFI (using C calling convention)
+extern "C" {
     fn MH_Initialize() -> i32;
     fn MH_CreateHook(pTarget: *mut c_void, pDetour: *mut c_void, ppOriginal: *mut *mut c_void) -> i32;
     fn MH_EnableHook(pTarget: *mut c_void) -> i32;
 }
 
-// Global storage for original function
+// Global storage for original functions
 static mut ORIGINAL_CONNECT: Option<unsafe extern "system" fn(SOCKET, *const SOCKADDR, i32) -> i32> = None;
+static mut ORIGINAL_SET_WINDOWS_HOOK_EX: Option<unsafe extern "system" fn(WINDOWS_HOOK_ID, HOOKPROC, HINSTANCE, u32) -> HHOOK> = None;
+static mut ORIGINAL_SET_WIN_EVENT_HOOK: Option<unsafe extern "system" fn(u32, u32, HINSTANCE, WINEVENTPROC, u32, u32, u32) -> HWINEVENTHOOK> = None;
 
 // Helper: Send log to firewall pipe
 unsafe fn send_log(msg: String) {
     let pipe_name = windows::core::s!("\\\\.\\pipe\\HydraDragonFirewall");
-    // Connect to pipe
     
-    let handle_res: windows::core::Result<HANDLE> = CreateFileA(
+    // Explicitly use windows-rs types to avoid inference issues (HANDLE.0 check)
+    let handle_res = windows::Win32::Storage::FileSystem::CreateFileA(
         pipe_name,
-        FILE_GENERIC_WRITE,
+        windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE.0,
         FILE_SHARE_READ,
         None,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
-        None
+        HANDLE::default()
     );
     
     if let Ok(handle) = handle_res {
-        if !handle.is_invalid() {
+        // INVALID_HANDLE_VALUE is -1, null handle is 0. Accessing .0 for comparison.
+        if handle.0 != 0 && handle.0 != -1 {
             let msg_c = CString::new(msg).unwrap_or_default();
             let bytes = msg_c.as_bytes();
             let mut written = 0;
@@ -47,63 +53,71 @@ unsafe fn send_log(msg: String) {
     }
 }
 
-// Detour function for 'connect'
+// Detours
 unsafe extern "system" fn connect_detour(s: SOCKET, name: *const SOCKADDR, namelen: i32) -> i32 {
-    send_log(format!("Connect call detected! Socket: {:?} Len: {}", s, namelen));
-    
-    // Call original
-    if let Some(original) = ORIGINAL_CONNECT {
-        original(s, name, namelen)
-    } else {
-        -1 
-    }
+    send_log(format!("🛡️ Connect call detected! Socket: {:?} Len: {}", s, namelen));
+    if let Some(original) = ORIGINAL_CONNECT { original(s, name, namelen) } else { -1 }
+}
+
+unsafe extern "system" fn set_windows_hook_ex_detour(id: WINDOWS_HOOK_ID, proc: HOOKPROC, hmod: HINSTANCE, tid: u32) -> HHOOK {
+    send_log(format!("🛡️ SetWindowsHookEx detected! ID: {:?} TID: {}", id, tid));
+    if let Some(original) = ORIGINAL_SET_WINDOWS_HOOK_EX { original(id, proc, hmod, tid) } else { HHOOK::default() }
+}
+
+unsafe extern "system" fn set_win_event_hook_detour(event_min: u32, event_max: u32, hmod: HINSTANCE, proc: WINEVENTPROC, pid: u32, tid: u32, flags: u32) -> HWINEVENTHOOK {
+    send_log(format!("🛡️ SetWinEventHook detected! PID: {} TID: {}", pid, tid));
+    if let Some(original) = ORIGINAL_SET_WIN_EVENT_HOOK { original(event_min, event_max, hmod, proc, pid, tid, flags) } else { HWINEVENTHOOK::default() }
 }
 
 fn initialize_hooks() {
     unsafe {
-        // Initialize MinHook
-        if MH_Initialize() != 0 {
-             send_log("MH_Initialize failed".into());
-             return;
-        }
+        if MH_Initialize() != 0 { return; }
 
-        let ws2_name = windows::core::s!("ws2_32.dll");
-        if let Ok(ws2) = LoadLibraryA(ws2_name) {
-            let connect_name = windows::core::s!("connect");
-            if let Some(target) = GetProcAddress(ws2, connect_name) {
-                let target_ptr = target as *mut c_void;
-                let detour_ptr = connect_detour as *mut c_void;
-                let mut original_ptr: *mut c_void = ptr::null_mut();
-                
-                // Create Hook
-                if MH_CreateHook(target_ptr, detour_ptr, &mut original_ptr) == 0 {
-                    if !original_ptr.is_null() {
-                        ORIGINAL_CONNECT = Some(mem::transmute(original_ptr));
-                    }
-                    
-                    // Enable Hook
-                    MH_EnableHook(target_ptr);
-                    
-                    send_log("Connect hook installed successfully".into());
-                } else {
-                    send_log("MH_CreateHook failed".into());
+        // 1. Hook Winsock Connect
+        if let Ok(ws2) = LoadLibraryA(windows::core::s!("ws2_32.dll")) {
+            if let Some(target) = GetProcAddress(ws2, windows::core::s!("connect")) {
+                let mut original: *mut c_void = ptr::null_mut();
+                if MH_CreateHook(target as _, connect_detour as _, &mut original) == 0 {
+                    ORIGINAL_CONNECT = mem::transmute::<*mut c_void, Option<unsafe extern "system" fn(SOCKET, *const SOCKADDR, i32) -> i32>>(original);
+                    MH_EnableHook(target as _);
                 }
             }
         }
+
+        // 2. Hook SetWindowsHookExW
+        if let Ok(user32) = LoadLibraryA(windows::core::s!("user32.dll")) {
+            if let Some(target) = GetProcAddress(user32, windows::core::s!("SetWindowsHookExW")) {
+                let mut original: *mut c_void = ptr::null_mut();
+                if MH_CreateHook(target as _, set_windows_hook_ex_detour as _, &mut original) == 0 {
+                    let opt: Option<unsafe extern "system" fn(WINDOWS_HOOK_ID, HOOKPROC, HINSTANCE, u32) -> HHOOK> = mem::transmute(original);
+                    ORIGINAL_SET_WINDOWS_HOOK_EX = opt;
+                    MH_EnableHook(target as _);
+                }
+            }
+            
+            // 3. Hook SetWinEventHook
+            if let Some(target) = GetProcAddress(user32, windows::core::s!("SetWinEventHook")) {
+                let mut original: *mut c_void = ptr::null_mut();
+                if MH_CreateHook(target as _, set_win_event_hook_detour as _, &mut original) == 0 {
+                    let opt: Option<unsafe extern "system" fn(u32, u32, HINSTANCE, WINEVENTPROC, u32, u32, u32) -> HWINEVENTHOOK> = mem::transmute(original);
+                    ORIGINAL_SET_WIN_EVENT_HOOK = opt;
+                    MH_EnableHook(target as _);
+                }
+            }
+        }
+        
+        send_log("🛡️ EDR Hooks (Connect, HookEx, EventHook) active!".into());
     }
 }
 
 #[no_mangle]
-pub extern "system" fn DllMain(_dll_module: HINSTANCE, call_reason: u32, _reserved: *mut c_void) -> BOOL {
-    match call_reason {
-        DLL_PROCESS_ATTACH => {
-            thread::spawn(|| {
-                // Sleep to avoid Loader Lock deadlocks
-                thread::sleep(Duration::from_millis(100));
-                initialize_hooks();
-            });
-        }
-        _ => {}
+#[allow(non_snake_case, unused_variables)]
+extern "system" fn DllMain(dll_module: HINSTANCE, call_reason: u32, reserved: *mut c_void) -> BOOL {
+    if call_reason == DLL_PROCESS_ATTACH {
+        thread::spawn(|| {
+            thread::sleep(Duration::from_millis(500));
+            initialize_hooks();
+        });
     }
     BOOL::from(true)
 }
