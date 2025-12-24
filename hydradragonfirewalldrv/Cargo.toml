@@ -14,7 +14,4 @@ wdk-build = "*"
 
 [dependencies]
 wdk = "*"
-wdk-macros = "*"
-wdk-alloc = "*"
-wdk-panic = "*"
 wdk-sys = "*"

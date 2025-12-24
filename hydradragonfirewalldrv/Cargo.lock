@@ -266,10 +266,7 @@ name = "hydradragonfirewalldrv"
 version = "0.1.0"
 dependencies = [
  "wdk",
- "wdk-alloc",
  "wdk-build",
- "wdk-macros",
- "wdk-panic",
  "wdk-sys",
 ]
 
@@ -693,18 +690,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wdk-alloc"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0000f9d158618c1dce7de647338e8219f9d6b618abd140c373c0552c6dbda1ca"
-dependencies = [
- "tracing",
- "tracing-subscriber",
- "wdk-build",
- "wdk-sys",
-]
-
-[[package]]
 name = "wdk-build"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -744,12 +729,6 @@ dependencies = [
  "serde_json",
  "syn",
 ]
-
-[[package]]
-name = "wdk-panic"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e594cced255434b29bfca586a74653985281377ff4e36b8cfa58fd4c4c63073a"
 
 [[package]]
 name = "wdk-sys"
