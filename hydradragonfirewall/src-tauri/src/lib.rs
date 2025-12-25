@@ -5,7 +5,7 @@ pub mod web_filter;
 use std::sync::Arc;
 
 use crate::engine::{FirewallEngine, WhitelistEntry};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, Emitter};
 
 pub fn run() {
     println!("DEBUG: Initializing Tauri Builder (with mod engine)...");
@@ -17,6 +17,11 @@ pub fn run() {
 
     let result = tauri::Builder::default()
         .manage(engine)
+        .invoke_handler(tauri::generate_handler![
+            add_whitelist_entry,
+            resolve_app_decision,
+            get_settings
+        ])
         .setup(|app: &mut tauri::App| {
             let handle: AppHandle = app.handle().clone();
             let engine: State<Arc<FirewallEngine>> = app.state();
@@ -29,4 +34,41 @@ pub fn run() {
         Ok(_) => println!("DEBUG: Tauri finished successfully."),
         Err(e) => println!("DEBUG: Tauri error: {}", e),
     }
+}
+
+#[tauri::command]
+async fn add_whitelist_entry(
+    item: String,
+    reason: String,
+    category: String,
+    engine: State<'_, Arc<FirewallEngine>>
+) -> Result<(), String> {
+    engine.add_whitelist_entry(item, reason, category);
+    Ok(())
+}
+
+#[tauri::command]
+async fn resolve_app_decision(
+    name: String,
+    decision: String,
+    engine: State<'_, Arc<FirewallEngine>>
+) -> Result<(), String> {
+    use crate::engine::AppDecision;
+    let d = match decision.to_lowercase().as_str() {
+        "allow" => AppDecision::Allow,
+        "block" => AppDecision::Block,
+        _ => AppDecision::Pending,
+    };
+    
+    engine.app_manager.decisions.write().unwrap().insert(name.to_lowercase(), d);
+    engine.save_settings();
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_settings(
+    engine: State<'_, Arc<FirewallEngine>>
+) -> Result<crate::engine::FirewallSettings, String> {
+    let s = engine.settings.read().unwrap();
+    Ok(s.clone())
 }

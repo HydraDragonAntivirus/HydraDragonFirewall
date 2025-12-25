@@ -37,6 +37,20 @@ struct WhitelistArgs {
     category: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PendingApp {
+    pub process_id: u32,
+    pub name: String,
+    pub dst_ip: String,
+    pub dst_port: u16,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ResolveArgs {
+    name: String,
+    decision: String,
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let (logs, set_logs) = create_signal(Vec::<LogEntry>::new());
@@ -45,11 +59,13 @@ pub fn App() -> impl IntoView {
     let (allowed_count, set_allowed_count) = create_signal(0);
     let (total_count, set_total_count) = create_signal(0);
     
-    // Modal State
+    // Modal States
     let (show_modal, set_show_modal) = create_signal(false);
     let (wl_item, set_wl_item) = create_signal(String::new());
     let (wl_category, set_wl_category) = create_signal("Trusted".to_string());
     let (wl_reason, set_wl_reason) = create_signal(String::new());
+
+    let (pending_app, set_pending_app) = create_signal(Option::<PendingApp>::None);
 
     // Setup Event Listener
     create_effect(move |_| {
@@ -83,6 +99,22 @@ pub fn App() -> impl IntoView {
             let _ = listen("log", &closure).await;
             closure.forget();
         });
+
+        // Ask Decision Listener
+        let ask_closure = Closure::wrap(Box::new(move |event: JsValue| {
+             if let Ok(payload) = serde_wasm_bindgen::from_value::<serde_json::Value>(event) {
+                 if let Some(payload_obj) = payload.get("payload") {
+                     if let Ok(app) = serde_json::from_value::<PendingApp>(payload_obj.clone()) {
+                         set_pending_app.set(Some(app));
+                     }
+                 }
+             }
+        }) as Box<dyn FnMut(JsValue)>);
+
+        spawn_local(async move {
+            let _ = listen("ask_app_decision", &ask_closure).await;
+            ask_closure.forget();
+        });
     });
 
     let submit_whitelist = move |ev: leptos::ev::SubmitEvent| {
@@ -99,6 +131,15 @@ pub fn App() -> impl IntoView {
             set_show_modal.set(false);
             set_wl_item.set(String::new());
             set_wl_reason.set(String::new());
+        });
+    };
+
+    let resolve_decision = move |name: String, decision: String| {
+        spawn_local(async move {
+            let args = ResolveArgs { name, decision };
+            let args_js = serde_wasm_bindgen::to_value(&args).unwrap();
+            let _ = invoke("resolve_app_decision", args_js).await;
+            set_pending_app.set(None);
         });
     };
 
@@ -218,6 +259,34 @@ pub fn App() -> impl IntoView {
                     </form>
                 </div>
             </div>
+
+            {move || pending_app.get().map(|app| view! {
+                <div class="modal-overlay open">
+                    <div class="glass-modal" style="border-top: 4px solid var(--accent-yellow)">
+                        <h2 style="margin-top: 0">"Security Prompt"</h2>
+                        <p style="color: var(--text-muted)">"A new application is requesting network access."</p>
+                        
+                        <div style="background: rgba(255,255,255,0.05); padding: 20px; border-radius: 12px; margin: 20px 0">
+                            <div style="font-weight: 700; font-size: 18px"> {app.name} </div>
+                            <div style="font-size: 12px; color: var(--text-muted); margin-top: 5px"> 
+                                "PID: " {app.process_id} " | Destination: " {app.dst_ip} ":" {app.dst_port}
+                            </div>
+                        </div>
+
+                        <div style="display: flex; gap: 15px; margin-top: 30px">
+                            <button class="btn-primary" 
+                                    style="background: var(--accent-red); flex: 1"
+                                    on:click=move |_| resolve_decision(app.name.clone(), "block".to_string())>
+                                "BLOCK"
+                            </button>
+                            <button class="btn-primary" style="flex: 2"
+                                    on:click=move |_| resolve_decision(app.name.clone(), "allow".to_string())>
+                                "ALLOW ACCESS"
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            })}
         </div>
     }
 }

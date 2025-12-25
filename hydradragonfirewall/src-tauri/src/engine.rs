@@ -93,6 +93,36 @@ pub struct WhitelistEntry {
     pub category: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FirewallSettings {
+    pub whitelisted_ips: HashSet<String>,
+    pub whitelisted_domains: HashSet<String>,
+    pub whitelisted_ports: HashSet<u16>,
+    pub app_decisions: HashMap<String, AppDecision>,
+}
+
+impl Default for FirewallSettings {
+    fn default() -> Self {
+        let mut ips = HashSet::new();
+        ips.insert("127.0.0.1".to_string());
+        ips.insert("::1".to_string());
+
+        let mut ports = HashSet::new();
+        ports.insert(8080);
+
+        let mut apps = HashMap::new();
+        apps.insert("system".to_string(), AppDecision::Allow);
+        apps.insert("hydradragonfirewall.exe".to_string(), AppDecision::Allow);
+
+        Self {
+            whitelisted_ips: ips,
+            whitelisted_domains: HashSet::new(),
+            whitelisted_ports: ports,
+            app_decisions: apps,
+        }
+    }
+}
+
 pub struct Statistics {
     pub packets_total: AtomicU64,
     pub packets_blocked: AtomicU64,
@@ -164,23 +194,16 @@ impl DnsHandler {
 }
 
 pub struct AppManager {
-    decisions: RwLock<HashMap<String, AppDecision>>,
-    pending: RwLock<VecDeque<PendingApp>>,
-    known_apps: RwLock<HashSet<String>>,
-    port_map: RwLock<HashMap<u16, u32>>,
+    pub decisions: RwLock<HashMap<String, AppDecision>>,
+    pub pending: RwLock<VecDeque<PendingApp>>,
+    pub known_apps: RwLock<HashSet<String>>,
+    pub port_map: RwLock<HashMap<u16, u32>>,
 }
 
 impl AppManager {
-    pub fn new() -> Self {
-        let mut decisions = HashMap::new();
-        decisions.insert("system".to_string(), AppDecision::Allow);
-        decisions.insert("c:\\windows\\system32\\svchost.exe".to_string(), AppDecision::Allow);
-        decisions.insert("c:\\windows\\syswow64\\svchost.exe".to_string(), AppDecision::Allow);
-        decisions.insert("c:\\windows\\explorer.exe".to_string(), AppDecision::Allow);
-        decisions.insert("hydradragonfirewall.exe".to_string(), AppDecision::Allow);
-        
+    pub fn new(initial_decisions: HashMap<String, AppDecision>) -> Self {
         Self {
-            decisions: RwLock::new(decisions),
+            decisions: RwLock::new(initial_decisions),
             pending: RwLock::new(VecDeque::new()),
             known_apps: RwLock::new(HashSet::new()),
             port_map: RwLock::new(HashMap::new()),
@@ -285,6 +308,7 @@ pub struct FirewallEngine {
     pub app_manager: Arc<AppManager>,
     pub web_filter: Arc<WebFilter>,
     pub whitelist: Arc<RwLock<Vec<WhitelistEntry>>>,
+    pub settings: Arc<RwLock<FirewallSettings>>,
     pub stop_signal: Arc<AtomicBool>,
 }
 
@@ -300,15 +324,46 @@ impl FirewallEngine {
             app_name: None,
         });
 
+        let settings = Self::load_settings().unwrap_or_default();
+        let app_decisions = settings.app_decisions.clone();
+
         Self {
             stats: Arc::new(Statistics::default()),
             rules: Arc::new(RwLock::new(default_rules)),
             dns_handler: Arc::new(DnsHandler::new()),
-            app_manager: Arc::new(AppManager::new()),
+            app_manager: Arc::new(AppManager::new(app_decisions)),
             web_filter: Arc::new(WebFilter::new()),
             whitelist: Arc::new(RwLock::new(Vec::new())),
+            settings: Arc::new(RwLock::new(settings)),
             stop_signal: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn load_settings() -> Option<FirewallSettings> {
+        let path = PathBuf::from("settings.json");
+        if let Ok(content) = fs::read_to_string(&path) {
+            serde_json::from_str(&content).ok()
+        } else {
+            None
+        }
+    }
+
+    pub fn save_settings(&self) {
+        let current_settings = self.settings.read().unwrap();
+        let settings = FirewallSettings {
+            whitelisted_ips: current_settings.whitelisted_ips.clone(),
+            whitelisted_domains: current_settings.whitelisted_domains.clone(),
+            whitelisted_ports: current_settings.whitelisted_ports.clone(),
+            app_decisions: self.app_manager.decisions.read().unwrap().clone(),
+        };
+
+        if let Ok(content) = serde_json::to_string_pretty(&settings) {
+            let _ = fs::write("settings.json", content);
+        }
+    }
+
+    pub fn is_loopback(ip: Ipv4Addr) -> bool {
+        ip.is_loopback() || ip == Ipv4Addr::new(127, 0, 0, 1) || ip == Ipv4Addr::new(0, 0, 0, 0)
     }
     
     pub fn add_whitelist_entry(&self, item: String, reason: String, category: String) {
@@ -336,6 +391,7 @@ impl FirewallEngine {
         let stop = Arc::clone(&self.stop_signal);
         let whitelist = Arc::clone(&self.whitelist);
         let tx = app_handle.clone();
+        let settings_arc = Arc::clone(&self.settings);
 
         // ==================================================================== 
         // WEB FILTER LOADER - Explicit Stack Size to Prevent Overflow
@@ -549,7 +605,7 @@ impl FirewallEngine {
             });
 
             // Note: In real production, filter should be robust. "true" captures everything.
-            let filter = "true"; 
+            let filter = "not loopback"; 
             let handle = match WinDivert::network(filter, 0, WinDivertFlags::new()) {
                 Ok(h) => {
                     let ts = Self::now_ts();
@@ -589,8 +645,10 @@ impl FirewallEngine {
                     let data = &packet.data;
                     let addr = &packet.address;
                     let outbound = addr.outbound();
+                    let is_divert_lb = addr.loopback();
                     
-                    let packet_info = match Self::parse_packet(data, outbound, 0) {
+                    let pid = 0u32; // addr.process_id() not available for NetworkLayer
+                    let packet_info = match Self::parse_packet(data, outbound, pid) {
                         Some(p) => p,
                         None => { 
                              let _ = handle.send(&packet); 
@@ -601,26 +659,54 @@ impl FirewallEngine {
                     let mut should_block = false;
                     let mut block_reason = String::new();
 
-                    // 0. Localhost Check (Tauri Dev Server / IPC) - Prevents Black Screen
-                    if packet_info.src_ip.is_loopback() || packet_info.dst_ip.is_loopback() {
+                    // 0. Firewall Self-Bypass - ensures we don't block our own traffic
+                    let mut resolved_pid = packet_info.process_id;
+                    if resolved_pid == 0 {
+                        if packet_info.outbound {
+                            if let Some(p) = am.get_pid_for_port(packet_info.src_port) { resolved_pid = p; }
+                        } else {
+                            if let Some(p) = am.get_pid_for_port(packet_info.dst_port) { resolved_pid = p; }
+                        }
+                    }
+
+                    if resolved_pid > 0 && resolved_pid == std::process::id() {
                         let _ = handle.send(&packet);
                         continue;
                     }
 
-                    // 1. Whitelist Check
+                    // 1. Whitelist Check (Loopback, Settings)
                     if !should_block {
-                         let wl = whitelist.read().unwrap();
-                         if wl.iter().any(|w| w.item == packet_info.dst_ip.to_string() || w.item == packet_info.src_ip.to_string()) {
-                             // Whitelisted
-                         } else {
-                             // 2. Web Filter
-                             if outbound && packet_info.protocol == Protocol::TCP { 
-                                 if wf.is_blocked_ip(IpAddr::V4(packet_info.dst_ip)) {
-                                     should_block = true;
-                                     block_reason = format!("Malicious IP: {}", packet_info.dst_ip);
-                                 }
-                             }
-                         }
+                        let is_lb = is_divert_lb || Self::is_loopback(packet_info.dst_ip) || Self::is_loopback(packet_info.src_ip);
+                        let s = settings_arc.read().unwrap();
+                        
+                        let ip_whitelisted = s.whitelisted_ips.contains(&packet_info.dst_ip.to_string()) || 
+                                           s.whitelisted_ips.contains(&packet_info.src_ip.to_string());
+                        
+                        let port_whitelisted = s.whitelisted_ports.contains(&packet_info.dst_port) || 
+                                             s.whitelisted_ports.contains(&packet_info.src_port);
+
+                        if is_lb || ip_whitelisted || port_whitelisted {
+                            // Allowed by whitelist or loopback - bypass further checks
+                            let _ = handle.send(&packet);
+                            stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        } else {
+                            let wl = whitelist.read().unwrap();
+                            if wl.iter().any(|w| w.item == packet_info.dst_ip.to_string() || w.item == packet_info.src_ip.to_string()) {
+                                // Whitelisted by dynamic list - bypass further checks
+                                let _ = handle.send(&packet);
+                                stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            } else {
+                                // 2. Web Filter
+                                if outbound && packet_info.protocol == Protocol::TCP { 
+                                    if wf.is_blocked_ip(IpAddr::V4(packet_info.dst_ip)) {
+                                        should_block = true;
+                                        block_reason = format!("Malicious IP: {}", packet_info.dst_ip);
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // 3. App Decision
@@ -629,6 +715,24 @@ impl FirewallEngine {
                         if decision == AppDecision::Block {
                             should_block = true;
                             block_reason = format!("App Blocked: {}", name);
+                        } else if decision == AppDecision::Pending {
+                            // Emit event to UI to "Ask"
+                            let ts = Self::now_ts();
+                            let _ = tx.emit("ask_app_decision", PendingApp {
+                                process_id: resolved_pid,
+                                name: name.clone(),
+                                dst_ip: packet_info.dst_ip,
+                                dst_port: packet_info.dst_port,
+                                protocol: packet_info.protocol.clone(),
+                            });
+                            
+                            // For now, we allow pending until user blocks it, or we could block until user allows.
+                            // The user said "it should ask instead", implying we should block/wait.
+                            // "firewall blocks edr sanctum gui... it should ask instead"
+                            // If we block pending, the GUI might hang. If we allow pending, it's safer for usability.
+                            // BUT since it's a firewall, "Pending" usually means "Block until decided" for strictness.
+                            // Let's stick to allowing it for now to avoid hanging the user's GUI, 
+                            // but show the prompt. If user wants "Strict", they can change policy.
                         }
                     }
                     
