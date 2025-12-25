@@ -1,5 +1,5 @@
-   1.148496700s  INFO prepare_target{force=false package_id=hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall) target="hydradragonfirewall"}: cargo::core::compiler::fingerprint: fingerprint error for hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall)/Check { test: false }/TargetInner { name: "hydradragonfirewall", doc: true, ..: with_path("C:\\Users\\victim\\Documents\\GitHub\\HydraDragonFirewall\\hydradragonfirewall\\src\\main.rs", Edition2021) }
-   1.148577500s  INFO prepare_target{force=false package_id=hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall) target="hydradragonfirewall"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall\target\debug\.fingerprint\hydradragonfirewall-546daee76e256072\bin-hydradragonfirewall`
+   1.712064800s  INFO prepare_target{force=false package_id=hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall) target="hydradragonfirewall"}: cargo::core::compiler::fingerprint: fingerprint error for hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall)/Check { test: false }/TargetInner { name: "hydradragonfirewall", doc: true, ..: with_path("C:\\Users\\victim\\Documents\\GitHub\\HydraDragonFirewall\\hydradragonfirewall\\src\\main.rs", Edition2021) }
+   1.712787600s  INFO prepare_target{force=false package_id=hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall) target="hydradragonfirewall"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall\target\debug\.fingerprint\hydradragonfirewall-546daee76e256072\bin-hydradragonfirewall`
 
 Caused by:
     Sistem belirtilen dosyayı bulamıyor. (os error 2)
@@ -26,8 +26,10 @@ Stack backtrace:
   18: git_midx_writer_dump
   19: BaseThreadInitThunk
   20: RtlUserThreadStart
-   1.310310500s  INFO prepare_target{force=false package_id=hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall) target="hydradragonfirewall"}: cargo::core::compiler::fingerprint: fingerprint error for hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall)/Check { test: true }/TargetInner { name: "hydradragonfirewall", doc: true, ..: with_path("C:\\Users\\victim\\Documents\\GitHub\\HydraDragonFirewall\\hydradragonfirewall\\src\\main.rs", Edition2021) }
-   1.310378600s  INFO prepare_target{force=false package_id=hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall) target="hydradragonfirewall"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall\target\debug\.fingerprint\hydradragonfirewall-b1538ca7f78b1d86\test-bin-hydradragonfirewall`
+   1.739705500s  INFO prepare_target{force=false package_id=hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall) target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint dirty for hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall)/RunCustomBuild/TargetInner { ..: custom_build_target("build-script-build", "C:\\Users\\victim\\Documents\\GitHub\\HydraDragonFirewall\\hydradragonfirewall\\build.rs", Edition2021) }
+   1.739750500s  INFO prepare_target{force=false package_id=hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall) target="build-script-build"}: cargo::core::compiler::fingerprint:     dirty: PrecalculatedComponentsChanged { old: "13411156956.136363300s (target/flycheck0/stderr)", new: "13411157134.453758900s (target/flycheck0/stderr)" }
+   1.764481700s  INFO prepare_target{force=false package_id=hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall) target="hydradragonfirewall"}: cargo::core::compiler::fingerprint: fingerprint error for hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall)/Check { test: true }/TargetInner { name: "hydradragonfirewall", doc: true, ..: with_path("C:\\Users\\victim\\Documents\\GitHub\\HydraDragonFirewall\\hydradragonfirewall\\src\\main.rs", Edition2021) }
+   1.764541900s  INFO prepare_target{force=false package_id=hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall) target="hydradragonfirewall"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall\target\debug\.fingerprint\hydradragonfirewall-b1538ca7f78b1d86\test-bin-hydradragonfirewall`
 
 Caused by:
     Sistem belirtilen dosyayı bulamıyor. (os error 2)
@@ -54,7 +56,7 @@ Stack backtrace:
   18: git_midx_writer_dump
   19: BaseThreadInitThunk
   20: RtlUserThreadStart
-    Checking hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall)
-error: could not compile `hydradragonfirewall` (bin "hydradragonfirewall" test) due to 6 previous errors
-warning: build failed, waiting for other jobs to finish...
+   Compiling hydradragonfirewall v0.1.0 (C:\Users\victim\Documents\GitHub\HydraDragonFirewall\hydradragonfirewall)
 error: could not compile `hydradragonfirewall` (bin "hydradragonfirewall") due to 6 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `hydradragonfirewall` (bin "hydradragonfirewall" test) due to 6 previous errors

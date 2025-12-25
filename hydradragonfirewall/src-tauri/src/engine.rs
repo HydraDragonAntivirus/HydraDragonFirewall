@@ -428,18 +428,7 @@ impl FirewallEngine {
                         });
                         
                         // Load each CSV file
-                        for csv_file in csv_files {
-                             // Use load_from_website_folder for the parent directory (or modify WebFilter to load single file)
-                             // Since existing WebFilter::load_from_website_folder takes a generic path and uses glob,
-                             // we can just call it once for the directory if we trust it, OR iterate.
-                             // The existing code in main.rs called it once per found directory? 
-                             // Wait, main.rs logic was: find a valid directory, then call `load_from_website_folder` on it.
-                             // `file` argument in load_from_website_folder seems to be a base path.
-                             
-                             // Actually, let's verify WebFilter::load_from_website_folder in web_filter.rs
-                             // It takes `base_path` and globs `base_path/*.optimized.csv`.
-                             
-                             // So we just need to find ONE valid directory and call it.
+                        for _csv_file in csv_files {
                              match wf_loader.load_from_website_folder(&path_str) {
                                 Ok(count) => {
                                     total_loaded = count;
@@ -565,7 +554,6 @@ impl FirewallEngine {
                 }
             };
             
-            // ... (rest of main loop logic)
             let mut buffer = vec![0u8; 65535];
             let mut counter = 0u64;
 
@@ -585,7 +573,6 @@ impl FirewallEngine {
                     let packet_info = match parse_packet(data, outbound, 0) {
                         Some(p) => p,
                         None => { 
-                             // allow malformed/unsupported but maybe log?
                              let _ = handle.send(&packet); 
                              continue; 
                         }
@@ -596,12 +583,12 @@ impl FirewallEngine {
 
                     // 1. Whitelist Check
                     if !should_block {
-                         // Check IPs
-                         if whitelist.read().unwrap().iter().any(|w| w.item == packet_info.dst_ip.to_string() || w.item == packet_info.src_ip.to_string()) {
+                         let wl = whitelist.read().unwrap();
+                         if wl.iter().any(|w| w.item == packet_info.dst_ip.to_string() || w.item == packet_info.src_ip.to_string()) {
                              // Whitelisted
                          } else {
                              // 2. Web Filter
-                             if outbound && packet_info.protocol == Protocol::TCP { // Basic check
+                             if outbound && packet_info.protocol == Protocol::TCP { 
                                  if wf.is_blocked_ip(std::net::IpAddr::V4(packet_info.dst_ip)) {
                                      should_block = true;
                                      block_reason = format!("Malicious IP: {}", packet_info.dst_ip);
@@ -616,13 +603,6 @@ impl FirewallEngine {
                         if decision == AppDecision::Block {
                             should_block = true;
                             block_reason = format!("App Blocked: {}", name);
-                        } else if decision == AppDecision::Pending {
-                            // If pending and not system, we block by default for safety or let pass?
-                            // HydraDragon logic was: show prompt.
-                            // For this MVP, we might auto-allow or block. Let's block if strict.
-                            // should_block = true;
-                            // block_reason = format!("App Pending: {}", name);
-                            // We should verify if frontend event for pending apps works
                         }
                     }
                     
@@ -646,10 +626,6 @@ impl FirewallEngine {
                     } else {
                         stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
                         let _ = handle.send(&packet);
-                    }
-                    
-                    if counter % 100 == 0 {
-                          // Emit stats update
                     }
                 }
             }
