@@ -32,9 +32,11 @@ echo.
 echo [2/4] Signing the Driver...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0sign_driver.ps1" -DriverPath "%~dp0hydradragonfirewalldrv.sys"
 if !errorLevel! neq 0 (
-    echo [ERROR] Driver signing failed.
-    pause
-    exit /b 1
+    echo [WARNING] Driver signing failed.
+    echo Possible reason: File is in use or Certificate error.
+    echo Tip: Try running "sc stop hydradragonfirewalldrv" before retrying.
+    echo Continuing anyway...
+    timeout /t 3 >nul
 )
 
 echo.
