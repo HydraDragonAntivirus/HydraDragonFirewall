@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HydraDragon Firewall</title>
+    <link rel="stylesheet" href="/style-2655d0f6a4db6a83.css" integrity="sha384-LHAkkALUd3/q4hOrouhAW5UaOy6Lzy+DCkgj4uwPMAmzI3TuH3hm4kfyUTxwSmhG"/>
+    
+<link rel="modulepreload" href="/hydradragon-ui-e17904de9eaab043.js" crossorigin="anonymous" integrity="sha384-YNJu7oYqefBTlEX23c8RjehL5P3XspAQCwLivln4FuwtnwyBTBYR9JVWmCQI3Dtv"><link rel="preload" href="/hydradragon-ui-e17904de9eaab043_bg.wasm" crossorigin="anonymous" integrity="sha384-UbHHvRyIguZOZbcK/WebeM3F5Nd5CqsctTboi0IXaTKCmZYN+6IuHbN4pZOqkGUG" as="fetch" type="application/wasm"></head>
+
+<body>
+
+<script type="module">
+import init, * as bindings from '/hydradragon-ui-e17904de9eaab043.js';
+const wasm = await init({ module_or_path: '/hydradragon-ui-e17904de9eaab043_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script></body>
+
+</html>

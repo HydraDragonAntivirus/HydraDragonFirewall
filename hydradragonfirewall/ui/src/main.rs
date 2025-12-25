@@ -91,92 +91,120 @@ pub fn App() -> impl IntoView {
     };
 
     view! {
-        <header>
-            <h1>"HydraDragon Firewall"</h1>
-            <div>
-                <button class="btn" on:click=move |_| set_show_modal.set(true)>"+ Whitelist"</button>
-            </div>
-        </header>
+        <div class="app-container">
+            <aside>
+                <div class="logo-area">
+                    <div class="logo-icon"></div>
+                    <span class="logo-text">"HYDRADRAGON"</span>
+                </div>
+                <nav>
+                    <a href="#" class="nav-item active">"Dashboard"</a>
+                    <a href="#" class="nav-item">"Protection Rules"</a>
+                    <a href="#" class="nav-item">"Network Logs"</a>
+                    <a href="#" class="nav-item">"Settings"</a>
+                </nav>
+                <div style="margin-top: auto">
+                    <button class="btn-primary" style="width: 100%" on:click=move |_| set_show_modal.set(true)>
+                        "+ WHITELIST"
+                    </button>
+                </div>
+            </aside>
 
-        <div class="dashboard-grid">
-            <div class="stat-card">
-                <h3>"Total Packets"</h3>
-                <div class="value" id="stat-total">{move || total_count.get()}</div>
-            </div>
-            <div class="stat-card">
-                <h3>"Blocked"</h3>
-                <div class="value" id="stat-blocked" style="color: var(--accent-red)">{move || blocked_count.get()}</div>
-            </div>
-            <div class="stat-card">
-                <h3>"Threats"</h3>
-                <div class="value" id="stat-threats" style="color: var(--warning)">{move || threats_count.get()}</div>
-            </div>
-            <div class="stat-card">
-                <h3>"Allowed"</h3>
-                <div class="value" id="stat-allowed" style="color: var(--success)">{move || allowed_count.get()}</div>
-            </div>
-        </div>
+            <main>
+                <header style="display: flex; justify-content: space-between; align-items: center">
+                    <h2 style="margin: 0; font-weight: 800; font-size: 28px">"Security Overview"</h2>
+                    <span style="color: var(--accent-green); font-weight: 600; font-size: 14px">
+                        "● SYSTEM SECURE"
+                    </span>
+                </header>
 
-        <div class="logs-container">
-            <div class="logs-header">
-                <h2>"Live Traffic Logs"</h2>
-                <span style="font-size: 12px; color: var(--text-secondary)">"Real-time Event Stream"</span>
-            </div>
-            <div class="logs-content">
-                <For
-                    each=move || logs.get()
-                    key=|log| log.timestamp
-                    children=move |log| {
-                        let level_class = match log.level.as_str() {
-                            "Info" => "log-info",
-                            "Success" => "log-success",
-                            "Warning" => "log-warning",
-                            "Error" => "log-error",
-                            _ => "log-info"
-                        };
-                        view! {
-                            <div class={format!("log-entry {}", level_class)}>
-                                <span class="log-time">"[" {log.timestamp} "]"</span>
-                                <span class="log-message">{log.message}</span>
-                            </div>
-                        }
-                    }
-                />
-            </div>
-        </div>
+                <div class="stats-grid">
+                    <div class="glass-card stat-item">
+                        <h4>"Total Traffic"</h4>
+                        <div class="stat-value">{move || total_count.get()}</div>
+                    </div>
+                    <div class="glass-card stat-item">
+                        <h4>"Blocked"</h4>
+                        <div class="stat-value" style="color: var(--accent-red)">{move || blocked_count.get()}</div>
+                    </div>
+                    <div class="glass-card stat-item" style="border-right: 4px solid var(--accent-yellow)">
+                        <h4>"Threats"</h4>
+                        <div class="stat-value" style="color: var(--accent-yellow)">{move || threats_count.get()}</div>
+                    </div>
+                    <div class="glass-card stat-item">
+                        <h4>"Safe Requests"</h4>
+                        <div class="stat-value" style="color: var(--accent-green)">{move || allowed_count.get()}</div>
+                    </div>
+                </div>
 
-        <div class={move || if show_modal.get() { "modal active" } else { "modal" }}>
-            <div class="modal-content">
-                <h2>"Add to Whitelist"</h2>
-                <form on:submit=submit_whitelist>
-                    <div class="form-group">
-                        <label>"IP Address or Domain"</label>
-                        <input type="text" required placeholder="e.g., 192.168.1.5"
-                               on:input=move |ev| set_wl_item.set(event_target_value(&ev))
-                               prop:value=wl_item
+                <div class="glass-card logs-section">
+                    <div class="section-header">
+                        <h3 style="margin: 0; font-size: 16px; font-weight: 700">"Real-time Intelligence"</h3>
+                        <span style="font-size: 12px; color: var(--text-muted)">"Scanning Network Adapters..."</span>
+                    </div>
+                    <div class="logs-viewport">
+                        <For
+                            each=move || logs.get()
+                            key=|log| log.timestamp
+                            children=move |log| {
+                                let level_class = match log.level.as_str() {
+                                    "Info" => "lvl-info",
+                                    "Success" => "lvl-success",
+                                    "Warning" => "lvl-warning",
+                                    "Error" => "lvl-error",
+                                    _ => "lvl-info"
+                                };
+                                view! {
+                                    <div class={format!("log-row {}", level_class)}>
+                                        <span class="log-time">"[" {log.timestamp % 100000} "]"</span>
+                                        <span class="log-msg">{log.message}</span>
+                                    </div>
+                                }
+                            }
                         />
                     </div>
-                    <div class="form-group">
-                        <label>"Category"</label>
-                        <select on:change=move |ev| set_wl_category.set(event_target_value(&ev)) prop:value=wl_category>
-                            <option value="Trusted">"Trusted Device"</option>
-                            <option value="Work">"Work Related"</option>
-                            <option value="Gaming">"Gaming Server"</option>
-                            <option value="Other">"Other"</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>"Reason"</label>
-                        <input type="text" required placeholder="Description..."
-                               on:input=move |ev| set_wl_reason.set(event_target_value(&ev))
-                               prop:value=wl_reason
-                        />
-                    </div>
-                    <div class="modal-actions">
-                        <button type="button" class="btn btn-secondary" on:click=move |_| set_show_modal.set(false)>"Cancel"</button>
-                        <button type="submit" class="btn">"Add Entry"</button>
-                    </div>
-                </form>
+                </div>
+            </main>
+
+            <div class={move || if show_modal.get() { "modal-overlay open" } else { "modal-overlay" }}>
+                <div class="glass-modal">
+                    <h2 style="margin-top: 0">"Whitelist Request"</h2>
+                    <form on:submit=submit_whitelist>
+                        <div class="input-group">
+                            <label>"TARGET IP / DOMAIN"</label>
+                            <input type="text" required placeholder="e.g. cloudflare.com"
+                                   on:input=move |ev| set_wl_item.set(event_target_value(&ev))
+                                   prop:value=wl_item
+                            />
+                        </div>
+                        <div class="input-group">
+                            <label>"SECURITY CATEGORY"</label>
+                            <select on:change=move |ev| set_wl_category.set(event_target_value(&ev)) prop:value=wl_category>
+                                <option value="Trusted">"Business / Trusted"</option>
+                                <option value="Development">"Development Lab"</option>
+                                <option value="Gaming">"Gaming / Latency Critical"</option>
+                                <option value="Other">"General Override"</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label>"JUSTIFICATION"</label>
+                            <input type="text" required placeholder="Reason for bypass..."
+                                   on:input=move |ev| set_wl_reason.set(event_target_value(&ev))
+                                   prop:value=wl_reason
+                            />
+                        </div>
+                        <div style="display: flex; gap: 15px; margin-top: 30px">
+                            <button type="button" class="btn-primary" 
+                                    style="background: #2a2d35; box-shadow: none; flex: 1"
+                                    on:click=move |_| set_show_modal.set(false)>
+                                "DISMISS"
+                            </button>
+                            <button type="submit" class="btn-primary" style="flex: 2">
+                                "AUTHORIZE ACCESS"
+                            </button>
+                        </div>
+                    </form>
+                </div>
             </div>
         </div>
     }

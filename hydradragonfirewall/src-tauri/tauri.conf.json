@@ -4,8 +4,8 @@
     "version": "0.1.0",
     "identifier": "com.hydradragon.firewall",
     "build": {
-        "beforeDevCommand": "trunk serve ui/index.html",
-        "beforeBuildCommand": "trunk build ui/index.html",
+        "beforeDevCommand": "",
+        "beforeBuildCommand": "",
         "devUrl": "http://localhost:8080",
         "frontendDist": "../ui/dist"
     },

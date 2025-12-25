@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{Ipv4Addr, IpAddr};
 use std::time::{SystemTime, Duration, UNIX_EPOCH};
-use std::thread;
 use std::path::PathBuf;
 use std::fs;
 use serde::{Serialize, Deserialize};
@@ -343,12 +342,11 @@ impl FirewallEngine {
         let wf_loader = Arc::clone(&self.web_filter);
         let tx_loader = app_handle.clone();
         
-        thread::Builder::new()
+        std::thread::Builder::new()
             .name("web_filter_loader".to_string())
             .stack_size(8 * 1024 * 1024) // 8MB Stack
             .spawn(move || {
-                use std::path::PathBuf;
-                // use std::fs; // Already imported
+                // use PathBuf and fs from top-level imports line 7 and 8
                 
                 // Try multiple absolute and relative paths
                 let mut paths = Vec::new();
@@ -393,7 +391,7 @@ impl FirewallEngine {
                     
                     let path_str = base_path.to_string_lossy().to_string();
                     let _ = tx_loader.emit("log", LogEntry { 
-                        timestamp: now_ts(), 
+                        timestamp: Self::now_ts(), 
                         level: LogLevel::Info, 
                         message: format!("Scanning for CSV files in: {}...", path_str) 
                     });
@@ -414,7 +412,7 @@ impl FirewallEngine {
                         
                         if csv_files.is_empty() {
                             let _ = tx_loader.emit("log", LogEntry { 
-                                timestamp: now_ts(), 
+                                timestamp: Self::now_ts(), 
                                 level: LogLevel::Warning, 
                                 message: format!("⚠️ No CSV files found in {}", path_str) 
                             });
@@ -422,7 +420,7 @@ impl FirewallEngine {
                         }
                         
                         let _ = tx_loader.emit("log", LogEntry { 
-                            timestamp: now_ts(), 
+                            timestamp: Self::now_ts(), 
                             level: LogLevel::Info, 
                             message: format!("Found {} CSV file(s) in {}", csv_files.len(), path_str) 
                         });
@@ -433,7 +431,7 @@ impl FirewallEngine {
                                 Ok(count) => {
                                     total_loaded = count;
                                     let _ = tx_loader.emit("log", LogEntry { 
-                                        timestamp: now_ts(), 
+                                        timestamp: Self::now_ts(), 
                                         level: LogLevel::Success, 
                                         message: format!("✅ Loaded {} entries from CSV files", count) 
                                     });
@@ -442,7 +440,7 @@ impl FirewallEngine {
                                 },
                                 Err(e) => {
                                     let _ = tx_loader.emit("log", LogEntry { 
-                                        timestamp: now_ts(), 
+                                        timestamp: Self::now_ts(), 
                                         level: LogLevel::Warning, 
                                         message: format!("⚠️ Failed to load CSV files: {}", e) 
                                     });
@@ -452,7 +450,7 @@ impl FirewallEngine {
                         
                         if loaded {
                             let _ = tx_loader.emit("log", LogEntry { 
-                                timestamp: now_ts(), 
+                                timestamp: Self::now_ts(), 
                                 level: LogLevel::Success, 
                                 message: format!("✅ WebFilter loaded {} total malicious signatures from {}", total_loaded, path_str) 
                             });
@@ -463,7 +461,7 @@ impl FirewallEngine {
                 
                 if !loaded {
                     let _ = tx_loader.emit("log", LogEntry { 
-                        timestamp: now_ts(), 
+                        timestamp: Self::now_ts(), 
                         level: LogLevel::Warning, 
                         message: "⚠️ WebFilter database not found. Firewall running with limited protection.".into() 
                     });
@@ -473,7 +471,7 @@ impl FirewallEngine {
         // Socket Layer (PID Tracking)
         let am_socket = Arc::clone(&am);
         let stop_socket = Arc::clone(&stop);
-        thread::Builder::new()
+        std::thread::Builder::new()
             .name("socket_layer".to_string())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
@@ -481,7 +479,7 @@ impl FirewallEngine {
              flags.set_sniff();
              flags.set_recv_only();
              if let Ok(handle) = WinDivert::socket("true", 0, flags) {
-                 while !stop_socket.load(Ordering::Relaxed) {
+                 while !stop_socket.load(std::sync::atomic::Ordering::Relaxed) {
                      if let Ok(packets) = handle.recv_ex(10) {
                          for packet in packets {
                              let addr = &packet.address;
@@ -499,7 +497,7 @@ impl FirewallEngine {
         // Flow Layer (PID Tracking)
         let am_flow = Arc::clone(&am);
         let stop_flow = Arc::clone(&stop);
-        thread::Builder::new()
+        std::thread::Builder::new()
             .name("flow_layer".to_string())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
@@ -507,7 +505,7 @@ impl FirewallEngine {
             flags.set_sniff();
             flags.set_recv_only();
             if let Ok(handle) = WinDivert::flow("true", 0, flags) {
-                 while !stop_flow.load(Ordering::Relaxed) {
+                 while !stop_flow.load(std::sync::atomic::Ordering::Relaxed) {
                      if let Ok(packets) = handle.recv_ex(10) {
                          for packet in packets {
                              let addr = &packet.address;
@@ -523,12 +521,12 @@ impl FirewallEngine {
         }).expect("failed to spawn flow thread");
 
         // Main Firewall Loop
-        thread::Builder::new()
+        std::thread::Builder::new()
             .name("firewall_main".to_string())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
             let _ = tx.emit("log", LogEntry { 
-                timestamp: now_ts(), 
+                timestamp: Self::now_ts(), 
                 level: LogLevel::Info, 
                 message: "Initializing WinDivert...".into() 
             });
@@ -538,7 +536,7 @@ impl FirewallEngine {
             let handle = match WinDivert::network(filter, 0, WinDivertFlags::new()) {
                 Ok(h) => {
                     let _ = tx.emit("log", LogEntry { 
-                        timestamp: now_ts(), 
+                        timestamp: Self::now_ts(), 
                         level: LogLevel::Success, 
                         message: "✅ WinDivert initialized. Protection Active.".into() 
                     });
@@ -546,7 +544,7 @@ impl FirewallEngine {
                 },
                 Err(e) => {
                     let _ = tx.emit("log", LogEntry { 
-                        timestamp: now_ts(), 
+                        timestamp: Self::now_ts(), 
                         level: LogLevel::Error, 
                         message: format!("❌ WinDivert failed: {}", e) 
                     });
@@ -558,7 +556,8 @@ impl FirewallEngine {
             let mut counter = 0u64;
 
             while !stop.load(Ordering::Relaxed) {
-                let recv_result = handle.recv_ex(Some(&mut buffer), 10);
+                let timeout = Duration::from_millis(10);
+                let recv_result = handle.recv_ex(Some(&mut buffer), timeout.as_millis() as usize);
                 if recv_result.is_err() { continue; }
                 let packets = recv_result.unwrap();
 
@@ -570,7 +569,7 @@ impl FirewallEngine {
                     let addr = &packet.address;
                     let outbound = addr.outbound();
                     
-                    let packet_info = match parse_packet(data, outbound, 0) {
+                    let packet_info = match Self::parse_packet(data, outbound, 0) {
                         Some(p) => p,
                         None => { 
                              let _ = handle.send(&packet); 
@@ -589,7 +588,7 @@ impl FirewallEngine {
                          } else {
                              // 2. Web Filter
                              if outbound && packet_info.protocol == Protocol::TCP { 
-                                 if wf.is_blocked_ip(std::net::IpAddr::V4(packet_info.dst_ip)) {
+                                 if wf.is_blocked_ip(IpAddr::V4(packet_info.dst_ip)) {
                                      should_block = true;
                                      block_reason = format!("Malicious IP: {}", packet_info.dst_ip);
                                  }
@@ -619,7 +618,7 @@ impl FirewallEngine {
                     if should_block {
                         stats.packets_blocked.fetch_add(1, Ordering::Relaxed);
                         let _ = tx.emit("log", LogEntry { 
-                            timestamp: now_ts(), 
+                            timestamp: Self::now_ts(), 
                             level: LogLevel::Warning, 
                             message: format!("Blocking: {}", block_reason) 
                         });
@@ -631,49 +630,54 @@ impl FirewallEngine {
             }
         }).expect("failed to spawn main firewall thread");
     }
+
+    pub fn inject_dll(&self, pid: u32, dll_path: &str) -> bool {
+        Injector::inject(pid, dll_path).is_ok()
+    }
+
+    fn now_ts() -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+    }
+
+    fn parse_packet(data: &[u8], outbound: bool, process_id: u32) -> Option<PacketInfo> {
+        if data.len() < 20 { return None; }
+        let ip_version = (data[0] >> 4) & 0x0F;
+        if ip_version != 4 { return None; }
+
+        let protocol = match data[9] {
+            6 => Protocol::TCP,
+            17 => Protocol::UDP,
+            1 => Protocol::ICMP,
+            n => Protocol::Raw(n),
+        };
+
+        let src_ip = Ipv4Addr::new(data[12], data[13], data[14], data[15]);
+        let dst_ip = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
+        let header_len = ((data[0] & 0x0F) as usize) * 4;
+
+        let (src_port, dst_port) = if header_len + 4 <= data.len() {
+            match protocol {
+                Protocol::TCP | Protocol::UDP => {
+                    (
+                        u16::from_be_bytes([data[header_len], data[header_len + 1]]),
+                        u16::from_be_bytes([data[header_len + 2], data[header_len + 3]])
+                    )
+                },
+                _ => (0, 0)
+            }
+        } else { (0, 0) };
+
+        Some(PacketInfo {
+            timestamp: Self::now_ts(),
+            protocol,
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+            size: data.len(),
+            outbound,
+            process_id,
+        })
+    }
 }
 
-fn now_ts() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
-}
-
-fn parse_packet(data: &[u8], outbound: bool, process_id: u32) -> Option<PacketInfo> {
-    if data.len() < 20 { return None; }
-    let ip_version = (data[0] >> 4) & 0x0F;
-    if ip_version != 4 { return None; }
-
-    let protocol = match data[9] {
-        6 => Protocol::TCP,
-        17 => Protocol::UDP,
-        1 => Protocol::ICMP,
-        n => Protocol::Raw(n),
-    };
-
-    let src_ip = Ipv4Addr::new(data[12], data[13], data[14], data[15]);
-    let dst_ip = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
-    let header_len = ((data[0] & 0x0F) as usize) * 4;
-
-    let (src_port, dst_port) = if header_len + 4 <= data.len() {
-        match protocol {
-            Protocol::TCP | Protocol::UDP => {
-                (
-                    u16::from_be_bytes([data[header_len], data[header_len + 1]]),
-                    u16::from_be_bytes([data[header_len + 2], data[header_len + 3]])
-                )
-            },
-            _ => (0, 0)
-        }
-    } else { (0, 0) };
-
-    Some(PacketInfo {
-        timestamp: now_ts(),
-        protocol,
-        src_ip,
-        dst_ip,
-        src_port,
-        dst_port,
-        size: data.len(),
-        outbound,
-        process_id,
-    })
-}

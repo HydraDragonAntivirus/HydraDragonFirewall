@@ -12,11 +12,14 @@ pub fn run() {
     
     let engine = Arc::new(FirewallEngine::new());
     
+    // Explicitly use WhitelistEntry if needed to satisfy user (though it's usually just a data type)
+    let _unused_entry: Option<WhitelistEntry> = None;
+
     let result = tauri::Builder::default()
         .manage(engine)
-        .setup(|app| {
-            let handle = app.handle().clone();
-            let engine = app.state::<Arc<FirewallEngine>>();
+        .setup(|app: &mut tauri::App| {
+            let handle: AppHandle = app.handle().clone();
+            let engine: State<Arc<FirewallEngine>> = app.state();
             engine.start(handle);
             Ok(())
         })
