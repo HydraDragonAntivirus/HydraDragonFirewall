@@ -40,8 +40,15 @@ namespace HydraDragonClient
             SetupTrayIcon();
             SetupKeyboardShortcuts();
 
-            // Start server immediately
-            _server.Start();
+            // Start server safely
+            try
+            {
+                _server.Start();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not start server on port {_settings.Port}: {ex.Message}\n\nTry closing other instances or change the port in settings.", "Server Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
             UpdateUI();
         }
 
@@ -50,90 +57,149 @@ namespace HydraDragonClient
             // Form setup
             Text = "HydraDragon Remote Desktop";
             Size = new Size(1200, 800);
-            MinimumSize = new Size(800, 600);
+            MinimumSize = new Size(950, 650);
             StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Color.FromArgb(30, 30, 30);
+            BackColor = Color.FromArgb(25, 25, 25);
             ForeColor = Color.White;
             Font = new Font("Segoe UI", 10);
             KeyPreview = true;
 
-            // Info panel (top)
+            // Header Panel
             _infoPanel = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 80,
-                BackColor = Color.FromArgb(45, 45, 48),
-                Padding = new Padding(10)
+                Height = 130, // Increased height for multiple rows
+                BackColor = Color.FromArgb(35, 35, 35),
+                Padding = new Padding(20, 10, 20, 10)
             };
 
+            var mainLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 2,
+                BackColor = Color.Transparent
+            };
+            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
+            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+
+            // Top Left: Title
             var titleLabel = new Label
             {
-                Text = "HydraDragon Remote Desktop",
-                Font = new Font("Segoe UI", 16, FontStyle.Bold),
-                Location = new Point(15, 10),
+                Text = "HYDRADRAGON",
+                Font = new Font("Segoe UI Black", 24, FontStyle.Bold),
+                ForeColor = Color.FromArgb(255, 50, 50), // Dragon Red
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
                 AutoSize = true
             };
-            _infoPanel.Controls.Add(titleLabel);
 
-            _ipLabel = new Label
+            // Top Right: Status/Buttons
+            var topButtons = new FlowLayoutPanel
             {
-                Text = $"Your IP: {GetLocalIPAddress()} | Port: {_settings.Port}",
-                Location = new Point(15, 45),
-                AutoSize = true
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(0, 5, 0, 0)
             };
-            _infoPanel.Controls.Add(_ipLabel);
 
-            _passwordLabel = new Label
+            var disconnectBtn = new Button
             {
-                Text = $"Session Password: {_server.SessionPassword}",
-                Font = new Font("Segoe UI", 12, FontStyle.Bold),
-                ForeColor = Color.FromArgb(0, 200, 120),
-                Location = new Point(350, 45),
-                AutoSize = true
+                Text = "DISCONNECT",
+                Size = new Size(120, 35),
+                BackColor = Color.FromArgb(180, 40, 40),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                Cursor = Cursors.Hand
             };
-            _infoPanel.Controls.Add(_passwordLabel);
-
-            var shortcutLabel = new Label
-            {
-                Text = "F1: Connect | F2: New Password | F5: Toggle Mouse | Esc: Disconnect",
-                ForeColor = Color.Gray,
-                Location = new Point(600, 45),
-                AutoSize = true
+            disconnectBtn.FlatAppearance.BorderSize = 0;
+            disconnectBtn.Click += (s, e) => {
+                if (_client.IsConnected) _client.Disconnect();
+                _statusLabel.Text = "Disconnected by user.";
             };
-            _infoPanel.Controls.Add(shortcutLabel);
 
             var sendFileBtn = new Button
             {
-                Text = "Send File",
-                Location = new Point(1050, 40),
-                Size = new Size(100, 30),
+                Text = "SEND FILE",
+                Size = new Size(120, 35),
                 BackColor = Color.FromArgb(0, 122, 204),
-                FlatStyle = FlatStyle.Flat
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                Cursor = Cursors.Hand,
+                Margin = new Padding(0, 0, 10, 0)
             };
+            sendFileBtn.FlatAppearance.BorderSize = 0;
             sendFileBtn.Click += async (s, e) =>
             {
                 if (!_client.IsConnected)
                 {
-                    MessageBox.Show("Not connected to a remote server.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show("Please connect to a remote server first.", "Not Connected", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
-
                 using var ofd = new OpenFileDialog();
                 if (ofd.ShowDialog() == DialogResult.OK)
                 {
-                    _statusLabel.Text = $"Sending file: {ofd.SafeFileName}...";
+                    _statusLabel.Text = $"Sending: {ofd.SafeFileName}";
                     await _client.SendFileAsync(ofd.FileName);
-                    _statusLabel.Text = "File sent successfully!";
+                    _statusLabel.Text = "File transfer complete.";
                 }
             };
-            _infoPanel.Controls.Add(sendFileBtn);
 
+            topButtons.Controls.Add(disconnectBtn);
+            topButtons.Controls.Add(sendFileBtn);
+
+            // Bottom Left: Connection Info
+            var infoBox = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                Padding = new Padding(0, 5, 0, 0)
+            };
+
+            _ipLabel = new Label
+            {
+                Text = $"IP: {GetLocalIPAddress()}  |  Port: {_settings.Port}",
+                ForeColor = Color.DarkGray,
+                Font = new Font("Segoe UI Semibold", 10),
+                AutoSize = true,
+                Margin = new Padding(0, 8, 20, 0)
+            };
+
+            _passwordLabel = new Label
+            {
+                Text = $"PASSWORD: {_server.SessionPassword}",
+                ForeColor = Color.FromArgb(0, 255, 120),
+                Font = new Font("Consolas", 14, FontStyle.Bold),
+                AutoSize = true
+            };
+
+            infoBox.Controls.Add(_ipLabel);
+            infoBox.Controls.Add(_passwordLabel);
+
+            // Bottom Right: Shortcuts
+            var shortcutLabel = new Label
+            {
+                Text = "F1: Connect  |  F2: New Pass  |  F5: Mouse  |  Esc: Stop",
+                ForeColor = Color.DimGray,
+                Font = new Font("Segoe UI", 9, FontStyle.Italic),
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleRight
+            };
+
+            mainLayout.Controls.Add(titleLabel, 0, 0);
+            mainLayout.Controls.Add(topButtons, 1, 0);
+            mainLayout.Controls.Add(infoBox, 0, 1);
+            mainLayout.Controls.Add(shortcutLabel, 1, 1);
+
+            _infoPanel.Controls.Add(mainLayout);
             Controls.Add(_infoPanel);
 
             // Screen viewer (center)
             _screenViewer = new ScreenViewer
             {
-                Dock = DockStyle.Fill
+                Dock = DockStyle.Fill,
+                BackColor = Color.Black
             };
             Controls.Add(_screenViewer);
 
@@ -141,16 +207,17 @@ namespace HydraDragonClient
             var statusPanel = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 30,
-                BackColor = Color.FromArgb(0, 122, 204)
+                Height = 25,
+                BackColor = Color.FromArgb(20, 20, 20)
             };
 
             _statusLabel = new Label
             {
-                Text = "Ready - Server running",
-                Location = new Point(10, 5),
+                Text = "SYSTEM READY",
+                Location = new Point(10, 4),
                 AutoSize = true,
-                ForeColor = Color.White
+                ForeColor = Color.Gray,
+                Font = new Font("Segoe UI", 8, FontStyle.Bold)
             };
             statusPanel.Controls.Add(_statusLabel);
 

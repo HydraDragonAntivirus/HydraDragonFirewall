@@ -23,136 +23,109 @@ namespace HydraDragonClient.UI
         public ConnectDialog(string defaultHost = "", int defaultPort = 9876)
         {
             // Form setup
-            Text = "Connect to Remote";
-            Size = new Size(400, 280);
+            Text = "REMOTE CONNECTION";
+            Size = new Size(450, 380);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
             MaximizeBox = false;
             MinimizeBox = false;
-            BackColor = Color.FromArgb(45, 45, 48);
+            BackColor = Color.FromArgb(30, 30, 30);
             ForeColor = Color.White;
-            Font = new Font("Segoe UI", 11);
+            Font = new Font("Segoe UI", 10);
             KeyPreview = true;
-            AcceptButton = null; // We'll handle Enter manually
 
-            var y = 20;
-
-            // Host
-            Controls.Add(new Label
+            var mainLayout = new TableLayoutPanel
             {
-                Text = "IP Address:",
-                Location = new Point(20, y),
-                AutoSize = true
-            });
-            y += 25;
-
-            _hostTextBox = new TextBox
-            {
-                Location = new Point(20, y),
-                Size = new Size(340, 30),
-                BackColor = Color.FromArgb(60, 60, 65),
-                ForeColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle,
-                Text = defaultHost,
-                TabIndex = 0
+                Dock = DockStyle.Fill,
+                Padding = new Padding(30),
+                ColumnCount = 1,
+                RowCount = 7
             };
-            Controls.Add(_hostTextBox);
-            y += 45;
 
-            // Port
-            Controls.Add(new Label
-            {
-                Text = "Port:",
-                Location = new Point(20, y),
-                AutoSize = true
-            });
-            y += 25;
+            // Add controls with consistent spacing
+            mainLayout.Controls.Add(CreateLabel("TARGET IP ADDRESS:"), 0, 0);
+            
+            _hostTextBox = CreateTextBox(defaultHost, 0);
+            mainLayout.Controls.Add(_hostTextBox, 0, 1);
 
-            _portTextBox = new TextBox
+            mainLayout.Controls.Add(CreateLabel("TARGET PORT:"), 0, 2);
+            
+            _portTextBox = CreateTextBox(defaultPort.ToString(), 1);
+            _portTextBox.Width = 120;
+            mainLayout.Controls.Add(_portTextBox, 0, 3);
+
+            mainLayout.Controls.Add(CreateLabel("SESSION PASSWORD (6 DIGITS):"), 0, 4);
+            
+            _passwordTextBox = CreateTextBox("", 2);
+            _passwordTextBox.UseSystemPasswordChar = true;
+            _passwordTextBox.MaxLength = 6;
+            mainLayout.Controls.Add(_passwordTextBox, 0, 5);
+
+            // Button layout
+            var buttonPanel = new FlowLayoutPanel
             {
-                Location = new Point(20, y),
-                Size = new Size(100, 30),
-                BackColor = Color.FromArgb(60, 60, 65),
-                ForeColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle,
-                Text = defaultPort.ToString(),
-                TabIndex = 1
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(0, 15, 0, 0)
             };
-            Controls.Add(_portTextBox);
-            y += 45;
 
-            // Password
-            Controls.Add(new Label
-            {
-                Text = "Password:",
-                Location = new Point(20, y),
-                AutoSize = true
-            });
-            y += 25;
+            _cancelButton = CreateButton("CANCEL", Color.FromArgb(80, 80, 80));
+            _cancelButton.Height = 50; // Increased height
+            _cancelButton.Click += (s, e) => Close();
 
-            _passwordTextBox = new TextBox
-            {
-                Location = new Point(20, y),
-                Size = new Size(200, 30),
-                BackColor = Color.FromArgb(60, 60, 65),
-                ForeColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle,
-                TabIndex = 2,
-                MaxLength = 6
-            };
-            Controls.Add(_passwordTextBox);
-
-            // Buttons
-            _connectButton = new Button
-            {
-                Text = "Connect",
-                Size = new Size(100, 35),
-                Location = new Point(160, y + 45),
-                BackColor = Color.FromArgb(0, 122, 204),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                TabIndex = 3
-            };
-            _connectButton.FlatAppearance.BorderSize = 0;
+            _connectButton = CreateButton("CONNECT", Color.FromArgb(0, 122, 204));
+            _connectButton.Height = 50; // Increased height
             _connectButton.Click += (s, e) => 
             {
                 if (ValidateInput())
                 {
                     Confirmed = true;
+                    DialogResult = DialogResult.OK;
                     Close();
                 }
             };
-            Controls.Add(_connectButton);
 
-            _cancelButton = new Button
-            {
-                Text = "Cancel",
-                Size = new Size(100, 35),
-                Location = new Point(270, y + 45),
-                BackColor = Color.FromArgb(80, 80, 85),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                TabIndex = 4
-            };
-            _cancelButton.FlatAppearance.BorderSize = 0;
-            _cancelButton.Click += (s, e) => Close();
-            Controls.Add(_cancelButton);
+            buttonPanel.Controls.Add(_cancelButton);
+            buttonPanel.Controls.Add(_connectButton);
+            mainLayout.Controls.Add(buttonPanel, 0, 6);
 
-            // Keyboard handling
+            Controls.Add(mainLayout);
+
+            // Handle Enter/Esc
             KeyDown += (s, e) =>
             {
-                if (e.KeyCode == Keys.Escape)
-                    Close();
-                else if (e.KeyCode == Keys.Enter)
-                {
-                    if (ValidateInput())
-                    {
-                        Confirmed = true;
-                        Close();
-                    }
-                }
+                if (e.KeyCode == Keys.Escape) Close();
+                else if (e.KeyCode == Keys.Enter) _connectButton.PerformClick();
             };
         }
+
+        private Label CreateLabel(string text) => new Label {
+            Text = text,
+            ForeColor = Color.DarkGray,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            AutoSize = true,
+            Margin = new Padding(0, 10, 0, 5)
+        };
+
+        private TextBox CreateTextBox(string text, int tabIndex) => new TextBox {
+            Text = text,
+            TabIndex = tabIndex,
+            BackColor = Color.FromArgb(45, 45, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 12),
+            Width = 370
+        };
+
+        private Button CreateButton(string text, Color backColor) => new Button {
+            Text = text,
+            Size = new Size(130, 40), // Default width slightly wider
+            BackColor = backColor,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+            Margin = new Padding(10, 0, 0, 0),
+            Cursor = Cursors.Hand
+        };
 
         private bool ValidateInput()
         {
