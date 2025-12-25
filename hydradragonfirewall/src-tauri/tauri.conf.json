@@ -1,0 +1,31 @@
+{
+    "$schema": "../gen/schemas/config-schema.json",
+    "productName": "hydradragonfirewall",
+    "version": "0.1.0",
+    "identifier": "com.hydradragon.firewall",
+    "build": {
+        "beforeDevCommand": "trunk serve",
+        "beforeBuildCommand": "trunk build",
+        "devUrl": "http://localhost:8080",
+        "frontendDist": "../ui/dist"
+    },
+    "app": {
+        "windows": [
+            {
+                "title": "HydraDragon Firewall",
+                "width": 1200,
+                "height": 800
+            }
+        ],
+        "security": {
+            "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": "all",
+        "icon": [
+            "icons/icon.ico"
+        ]
+    }
+}
