@@ -1,4 +1,4 @@
-// pub mod engine;
+pub mod engine;
 pub mod injector;
 pub mod web_filter;
 
@@ -7,15 +7,9 @@ pub mod web_filter;
 // use std::sync::Arc;
 
 pub fn run() {
-    println!("DEBUG: Initializing Tauri Builder...");
+    println!("DEBUG: Initializing Tauri Builder (with mod engine)...");
     
     let result = tauri::Builder::default()
-        /*
-        .setup(|_app| {
-            println!("DEBUG: Setup hook started.");
-            Ok(())
-        })
-        */
         .run(tauri::generate_context!());
 
     match result {
