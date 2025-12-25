@@ -11,11 +11,23 @@ extern "C" {
     async fn listen(event: &str, handler: &Closure<dyn FnMut(JsValue)>) -> JsValue;
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum LogLevel {
+    Info,
+    Success,
+    Warning,
+    Error,
+    #[serde(other)]
+    Other,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct LogEntry {
-    timestamp: u64,
-    level: String,
-    message: String,
+pub struct LogEntry {
+    pub id: String,
+    pub timestamp: u64,
+    pub level: LogLevel,
+    pub message: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -51,8 +63,8 @@ pub fn App() -> impl IntoView {
                         });
                         
                         set_total_count.update(|n| *n += 1);
-                        match entry.level.as_str() {
-                            "Warning" | "Error" => {
+                        match entry.level {
+                            LogLevel::Warning | LogLevel::Error => {
                                 if entry.message.contains("Blocking") {
                                     set_blocked_count.update(|n| *n += 1);
                                 }
@@ -145,14 +157,14 @@ pub fn App() -> impl IntoView {
                     <div class="logs-viewport">
                         <For
                             each=move || logs.get()
-                            key=|log| log.timestamp
+                            key=|log| log.id.clone()
                             children=move |log| {
-                                let level_class = match log.level.as_str() {
-                                    "Info" => "lvl-info",
-                                    "Success" => "lvl-success",
-                                    "Warning" => "lvl-warning",
-                                    "Error" => "lvl-error",
-                                    _ => "lvl-info"
+                                let level_class = match log.level {
+                                    LogLevel::Info => "lvl-info",
+                                    LogLevel::Success => "lvl-success",
+                                    LogLevel::Warning => "lvl-warning",
+                                    LogLevel::Error => "lvl-error",
+                                    _ => "lvl-info",
                                 };
                                 view! {
                                     <div class={format!("log-row {}", level_class)}>
