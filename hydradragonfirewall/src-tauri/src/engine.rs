@@ -53,6 +53,7 @@ pub enum LogLevel {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogEntry {
+    pub id: String,
     pub timestamp: u64,
     pub level: LogLevel,
     pub message: String,
@@ -390,8 +391,10 @@ impl FirewallEngine {
                     }
                     
                     let path_str = base_path.to_string_lossy().to_string();
+                    let ts = Self::now_ts();
                     let _ = tx_loader.emit("log", LogEntry { 
-                        timestamp: Self::now_ts(), 
+                        id: format!("{}-scan", ts),
+                        timestamp: ts, 
                         level: LogLevel::Info, 
                         message: format!("Scanning for CSV files in: {}...", path_str) 
                     });
@@ -411,16 +414,20 @@ impl FirewallEngine {
                             .collect();
                         
                         if csv_files.is_empty() {
+                            let ts = Self::now_ts();
                             let _ = tx_loader.emit("log", LogEntry { 
-                                timestamp: Self::now_ts(), 
+                                id: format!("{}-csv-none", ts),
+                                timestamp: ts, 
                                 level: LogLevel::Warning, 
                                 message: format!("⚠️ No CSV files found in {}", path_str) 
                             });
                             continue;
                         }
                         
+                        let ts = Self::now_ts();
                         let _ = tx_loader.emit("log", LogEntry { 
-                            timestamp: Self::now_ts(), 
+                            id: format!("{}-csv-found", ts),
+                            timestamp: ts, 
                             level: LogLevel::Info, 
                             message: format!("Found {} CSV file(s) in {}", csv_files.len(), path_str) 
                         });
@@ -430,8 +437,10 @@ impl FirewallEngine {
                              match wf_loader.load_from_website_folder(&path_str) {
                                 Ok(count) => {
                                     total_loaded = count;
+                                    let ts = Self::now_ts();
                                     let _ = tx_loader.emit("log", LogEntry { 
-                                        timestamp: Self::now_ts(), 
+                                        id: format!("{}-csv-loaded", ts),
+                                        timestamp: ts, 
                                         level: LogLevel::Success, 
                                         message: format!("✅ Loaded {} entries from CSV files", count) 
                                     });
@@ -439,8 +448,10 @@ impl FirewallEngine {
                                     break;
                                 },
                                 Err(e) => {
+                                    let ts = Self::now_ts();
                                     let _ = tx_loader.emit("log", LogEntry { 
-                                        timestamp: Self::now_ts(), 
+                                        id: format!("{}-web-load-fail", ts),
+                                        timestamp: ts, 
                                         level: LogLevel::Warning, 
                                         message: format!("⚠️ Failed to load CSV files: {}", e) 
                                     });
@@ -449,8 +460,10 @@ impl FirewallEngine {
                         }
                         
                         if loaded {
+                            let ts = Self::now_ts();
                             let _ = tx_loader.emit("log", LogEntry { 
-                                timestamp: Self::now_ts(), 
+                                id: format!("{}-web-total-loaded", ts),
+                                timestamp: ts, 
                                 level: LogLevel::Success, 
                                 message: format!("✅ WebFilter loaded {} total malicious signatures from {}", total_loaded, path_str) 
                             });
@@ -460,8 +473,10 @@ impl FirewallEngine {
                 }
                 
                 if !loaded {
+                    let ts = Self::now_ts();
                     let _ = tx_loader.emit("log", LogEntry { 
-                        timestamp: Self::now_ts(), 
+                        id: format!("{}-web-not-found", ts),
+                        timestamp: ts, 
                         level: LogLevel::Warning, 
                         message: "⚠️ WebFilter database not found. Firewall running with limited protection.".into() 
                     });
@@ -525,8 +540,10 @@ impl FirewallEngine {
             .name("firewall_main".to_string())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
+            let ts = Self::now_ts();
             let _ = tx.emit("log", LogEntry { 
-                timestamp: Self::now_ts(), 
+                id: format!("{}-init-divert", ts),
+                timestamp: ts, 
                 level: LogLevel::Info, 
                 message: "Initializing WinDivert...".into() 
             });
@@ -535,16 +552,20 @@ impl FirewallEngine {
             let filter = "true"; 
             let handle = match WinDivert::network(filter, 0, WinDivertFlags::new()) {
                 Ok(h) => {
+                    let ts = Self::now_ts();
                     let _ = tx.emit("log", LogEntry { 
-                        timestamp: Self::now_ts(), 
+                        id: format!("{}-divert-active", ts),
+                        timestamp: ts, 
                         level: LogLevel::Success, 
                         message: "✅ WinDivert initialized. Protection Active.".into() 
                     });
                     h
                 },
                 Err(e) => {
+                    let ts = Self::now_ts();
                     let _ = tx.emit("log", LogEntry { 
-                        timestamp: Self::now_ts(), 
+                        id: format!("{}-divert-fail", ts),
+                        timestamp: ts, 
                         level: LogLevel::Error, 
                         message: format!("❌ WinDivert failed: {}", e) 
                     });
@@ -579,6 +600,12 @@ impl FirewallEngine {
 
                     let mut should_block = false;
                     let mut block_reason = String::new();
+
+                    // 0. Localhost Check (Tauri Dev Server / IPC) - Prevents Black Screen
+                    if packet_info.src_ip.is_loopback() || packet_info.dst_ip.is_loopback() {
+                        let _ = handle.send(&packet);
+                        continue;
+                    }
 
                     // 1. Whitelist Check
                     if !should_block {
@@ -617,8 +644,10 @@ impl FirewallEngine {
 
                     if should_block {
                         stats.packets_blocked.fetch_add(1, Ordering::Relaxed);
+                        let ts = Self::now_ts();
                         let _ = tx.emit("log", LogEntry { 
-                            timestamp: Self::now_ts(), 
+                            id: format!("{}-block-{}", ts, counter),
+                            timestamp: ts, 
                             level: LogLevel::Warning, 
                             message: format!("Blocking: {}", block_reason) 
                         });
