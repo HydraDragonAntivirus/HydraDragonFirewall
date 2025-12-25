@@ -14,7 +14,7 @@ extern "C" {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct LogEntry {
     timestamp: u64,
-    level: String, // String for now to match JSON
+    level: String,
     message: String,
 }
 
@@ -42,16 +42,14 @@ pub fn App() -> impl IntoView {
     // Setup Event Listener
     create_effect(move |_| {
         let closure = Closure::wrap(Box::new(move |event: JsValue| {
-            // Unpack event payload
              if let Ok(payload) = serde_wasm_bindgen::from_value::<serde_json::Value>(event) {
                  if let Some(payload_obj) = payload.get("payload") {
                      if let Ok(entry) = serde_json::from_value::<LogEntry>(payload_obj.clone()) {
-                        set_logs.update(|l| {
+                        set_logs.update(|l: &mut Vec<LogEntry>| {
                             l.push(entry.clone());
-                            if l.len() > 100 { l.remove(0); } // Keep last 100
+                            if l.len() > 100 { l.remove(0); }
                         });
                         
-                        // Update Stats
                         set_total_count.update(|n| *n += 1);
                         match entry.level.as_str() {
                             "Warning" | "Error" => {
@@ -69,8 +67,10 @@ pub fn App() -> impl IntoView {
              }
         }) as Box<dyn FnMut(JsValue)>);
         
-        let _ = listen("log", &closure);
-        closure.forget(); // Leak to keep listener alive
+        spawn_local(async move {
+            let _ = listen("log", &closure).await;
+            closure.forget();
+        });
     });
 
     let submit_whitelist = move |ev: leptos::ev::SubmitEvent| {
