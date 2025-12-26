@@ -1,10 +1,10 @@
-// pub mod engine;
+pub mod engine;
 pub mod injector;
 pub mod web_filter;
 
 use std::sync::Arc;
 
-// use crate::engine::FirewallEngine;
+use crate::engine::FirewallEngine;
 use tauri::{AppHandle, Manager};
 
 #[tauri::command]
@@ -14,7 +14,12 @@ async fn add_whitelist_entry(
     category: String,
     handle: AppHandle
 ) -> Result<(), String> {
-    Ok(())
+    if let Some(engine) = handle.try_state::<Arc<FirewallEngine>>() {
+        engine.add_whitelist_entry(item, reason, category);
+        Ok(())
+    } else {
+        Err("Firewall engine is still initializing...".to_string())
+    }
 }
 
 #[tauri::command]
@@ -23,14 +28,32 @@ async fn resolve_app_decision(
     decision: String,
     handle: AppHandle
 ) -> Result<(), String> {
-    Ok(())
+    if let Some(engine) = handle.try_state::<Arc<FirewallEngine>>() {
+        use crate::engine::AppDecision;
+        let d = match decision.to_lowercase().as_str() {
+            "allow" => AppDecision::Allow,
+            "block" => AppDecision::Block,
+            _ => AppDecision::Pending,
+        };
+        
+        engine.app_manager.decisions.write().unwrap().insert(name.to_lowercase(), d);
+        engine.save_settings();
+        Ok(())
+    } else {
+        Err("Firewall engine is still initializing...".to_string())
+    }
 }
 
 #[tauri::command]
 async fn get_settings(
-    handle: tauri::AppHandle
-) -> Result<(), String> {
-    Err("Not implemented".to_string())
+    handle: AppHandle
+) -> Result<crate::engine::FirewallSettings, String> {
+    if let Some(engine) = handle.try_state::<Arc<FirewallEngine>>() {
+        let s = engine.settings.read().unwrap();
+        Ok(s.clone())
+    } else {
+        Err("Firewall engine is still initializing...".to_string())
+    }
 }
 
 pub fn run() {
@@ -45,7 +68,28 @@ pub fn run() {
     builder
         .setup(|app| {
             println!("DEBUG: Entering setup closure...");
-            let _handle = app.handle().clone();
+            let handle = app.handle().clone();
+            
+            // Move engine initialization to a background thread to prevent main-thread stack overflow
+            // and ensure the UI starts up immediately.
+            println!("DEBUG: Spawning engine_init thread...");
+            std::thread::Builder::new()
+                .name("engine_init".to_string())
+                .stack_size(16 * 1024 * 1024) // 16MB for init thread
+                .spawn(move || {
+                    println!("DEBUG: Initializing Firewall Engine on background thread...");
+                    
+                    let engine = Arc::new(FirewallEngine::new());
+                    println!("DEBUG: Engine initialized successfully.");
+                    
+                    // Manage the engine state on the handle
+                    handle.manage(engine.clone());
+                    
+                    // Start the engine loops
+                    engine.start(handle);
+                })
+                .expect("Failed to spawn engine_init thread");
+
             println!("DEBUG: setup closure finished.");
             Ok(())
         })
