@@ -2,5 +2,5 @@
 
 fn main() {
     println!("--- HydraDragon Firewall Starting ---");
-    hydradragonfirewall::run();
+    hydradragon_tauri::run();
 }

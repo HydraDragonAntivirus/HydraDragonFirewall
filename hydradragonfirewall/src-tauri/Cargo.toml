@@ -1,5 +1,5 @@
 [package]
-name = "hydradragonfirewall"
+name = "hydradragon_tauri"
 version = "0.1.0"
 description = "HydraDragon Firewall"
 authors = ["Emirhan Ucan"]

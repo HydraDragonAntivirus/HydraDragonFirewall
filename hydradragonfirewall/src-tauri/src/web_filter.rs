@@ -16,8 +16,7 @@ struct CsvRecord {
     // We ignore other fields like ref_ids for now
 }
 
-// Use lazy_static to compile regex patterns lazily (on first use, not on startup)
-// This prevents stack overflow during initialization
+/* 
 lazy_static! {
     static ref DISCORD_WEBHOOK_REGEX: Regex = 
         Regex::new(r"https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+").unwrap();
@@ -26,6 +25,7 @@ lazy_static! {
     static ref TELEGRAM_TOKEN_REGEX: Regex = 
         Regex::new(r"[0-9]{8,10}:[a-zA-Z0-9_-]{35}").unwrap();
 }
+*/
 
 #[derive(Clone)]
 pub struct WebFilter {
@@ -137,6 +137,7 @@ impl WebFilter {
         
         let text = String::from_utf8_lossy(&payload[..scan_len]);
         
+        /* 
         // Check regexes using lazy_static patterns (compiled on first use)
         if DISCORD_WEBHOOK_REGEX.is_match(&text) {
             return Some(format!("Regex Match: Discord Webhook"));
@@ -147,6 +148,7 @@ impl WebFilter {
         if TELEGRAM_TOKEN_REGEX.is_match(&text) {
             return Some(format!("Regex Match: Telegram Token"));
         }
+        */
 
         // 2. Check for Host header (HTTP)
         // Find "Host: "
