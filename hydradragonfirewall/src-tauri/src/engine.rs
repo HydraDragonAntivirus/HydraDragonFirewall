@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::fs;
 use serde::{Serialize, Deserialize};
 use tauri::{AppHandle, Emitter};
-
+use windivert::prelude::*;
 use crate::web_filter::WebFilter;
 use crate::injector::Injector;
 
@@ -637,18 +637,50 @@ impl FirewallEngine {
                 message: "Initializing WinDivert (Passthrough Mode)...".into() 
             });
 
-            // SAFETY MODE: WINDIVERT DISABLED (While debugging FFI)
+            let flags = WinDivertFlags::default();
+            
+            let filter = "true and !loopback";
+            let priority = 0;
+            
             let ts = Self::now_ts();
             let _ = tx.emit("log", LogEntry { 
-                id: format!("{}-divert-disabled", ts),
+                id: format!("{}-divert-active", ts),
                 timestamp: ts, 
-                level: LogLevel::Warning, 
-                message: "⚠️ Firewall Engine DISABLED (Safety Mode). Debugging FFI signatures.".into() 
+                level: LogLevel::Success, 
+                message: "🛡️ Firewall Engine ACTIVE. Intercepting traffic...".into() 
             });
 
-            // Clean shutdown loop
-            while !stop.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_secs(1));
+            match WinDivert::network(filter, priority, flags) {
+                Ok(handle) => {
+                    let mut buffer = vec![0u8; 65535];
+                    while !stop.load(Ordering::Relaxed) {
+                        // Receive packets
+                        match handle.recv_ex(Some(&mut buffer), 10) {
+                            Ok(packets) => {
+                                for packet in packets {
+                                    // For now, just re-inject immediately to restore connectivity.
+                                    match handle.send(&packet) {
+                                        Ok(_) => {}, 
+                                        Err(_) => {}
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    let ts = Self::now_ts();
+                    let _ = tx.emit("log", LogEntry { 
+                        id: format!("{}-divert-fail", ts),
+                        timestamp: ts, 
+                        level: LogLevel::Error, 
+                        message: format!("❌ Failed to open WinDivert handle: {}", e) 
+                    });
+                     std::thread::sleep(Duration::from_secs(5));
+                }
             }
         }).expect("failed to spawn main firewall thread");
     }
