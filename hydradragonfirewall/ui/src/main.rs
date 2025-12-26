@@ -260,32 +260,36 @@ pub fn App() -> impl IntoView {
                 </div>
             </div>
 
-            {move || pending_app.get().map(|app| view! {
-                <div class="modal-overlay open">
-                    <div class="glass-modal" style="border-top: 4px solid var(--accent-yellow)">
-                        <h2 style="margin-top: 0">"Security Prompt"</h2>
-                        <p style="color: var(--text-muted)">"A new application is requesting network access."</p>
-                        
-                        <div style="background: rgba(255,255,255,0.05); padding: 20px; border-radius: 12px; margin: 20px 0">
-                            <div style="font-weight: 700; font-size: 18px"> {app.name} </div>
-                            <div style="font-size: 12px; color: var(--text-muted); margin-top: 5px"> 
-                                "PID: " {app.process_id} " | Destination: " {app.dst_ip} ":" {app.dst_port}
+            {move || pending_app.get().map(|app| {
+                let name_for_block = app.name.clone();
+                let name_for_allow = app.name.clone();
+                view! {
+                    <div class="modal-overlay open">
+                        <div class="glass-modal" style="border-top: 4px solid var(--accent-yellow)">
+                            <h2 style="margin-top: 0">"Security Prompt"</h2>
+                            <p style="color: var(--text-muted)">"A new application is requesting network access."</p>
+                            
+                            <div style="background: rgba(255,255,255,0.05); padding: 20px; border-radius: 12px; margin: 20px 0">
+                                <div style="font-weight: 700; font-size: 18px"> {app.name.clone()} </div>
+                                <div style="font-size: 12px; color: var(--text-muted); margin-top: 5px"> 
+                                    "PID: " {app.process_id} " | Destination: " {app.dst_ip} ":" {app.dst_port}
+                                </div>
+                            </div>
+
+                            <div style="display: flex; gap: 15px; margin-top: 30px">
+                                <button class="btn-primary" 
+                                        style="background: var(--accent-red); flex: 1"
+                                        on:click=move |_| resolve_decision(name_for_block.clone(), "block".to_string())>
+                                    "BLOCK"
+                                </button>
+                                <button class="btn-primary" style="flex: 2"
+                                        on:click=move |_| resolve_decision(name_for_allow.clone(), "allow".to_string())>
+                                    "ALLOW ACCESS"
+                                </button>
                             </div>
                         </div>
-
-                        <div style="display: flex; gap: 15px; margin-top: 30px">
-                            <button class="btn-primary" 
-                                    style="background: var(--accent-red); flex: 1"
-                                    on:click=move |_| resolve_decision(app.name.clone(), "block".to_string())>
-                                "BLOCK"
-                            </button>
-                            <button class="btn-primary" style="flex: 2"
-                                    on:click=move |_| resolve_decision(app.name.clone(), "allow".to_string())>
-                                "ALLOW ACCESS"
-                            </button>
-                        </div>
                     </div>
-                </div>
+                }
             })}
         </div>
     }

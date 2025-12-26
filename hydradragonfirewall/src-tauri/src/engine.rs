@@ -639,7 +639,7 @@ impl FirewallEngine {
 
             let flags = WinDivertFlags::default();
             
-            let filter = "true and !loopback";
+            let filter = "true and !loopback and !ip.Addr == 127.0.0.1";
             let priority = 0;
             
             let ts = Self::now_ts();
@@ -696,6 +696,7 @@ impl FirewallEngine {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
     }
 
+    #[allow(dead_code)]
     fn log_to_file(message: &str) {
         let ts = Self::now_ts();
         let log_line = format!("[{}] {}\n", ts, message);
@@ -706,6 +707,7 @@ impl FirewallEngine {
             .and_then(|mut f| std::io::Write::write_all(&mut f, log_line.as_bytes()));
     }
 
+    #[allow(dead_code)]
     fn parse_packet(data: &[u8], outbound: bool, process_id: u32) -> Option<PacketInfo> {
         if data.len() < 20 { return None; }
         let ip_version = (data[0] >> 4) & 0x0F;

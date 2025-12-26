@@ -6,14 +6,15 @@
     "build": {
         "beforeDevCommand": "",
         "beforeBuildCommand": "",
-        "devUrl": "http://localhost:8080",
         "frontendDist": "../ui/dist"
     },
     "app": {
         "withGlobalTauri": true,
         "windows": [
             {
+                "label": "main",
                 "title": "HydraDragon Firewall",
+                "url": "index.html",
                 "width": 1200,
                 "height": 800
             }

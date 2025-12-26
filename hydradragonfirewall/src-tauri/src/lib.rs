@@ -11,6 +11,7 @@ pub fn run() {
     println!("DEBUG: Initializing Tauri Builder (with mod engine)...");
     
     let engine = Arc::new(FirewallEngine::new());
+    println!("DEBUG: Engine initialized successfully.");
     
     // Explicitly use WhitelistEntry if needed to satisfy user (though it's usually just a data type)
     let _unused_entry: Option<WhitelistEntry> = None;
