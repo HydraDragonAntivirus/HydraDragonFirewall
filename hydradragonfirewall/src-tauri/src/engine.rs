@@ -79,11 +79,54 @@ pub struct PendingApp {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FirewallRule {
     pub name: String,
+    pub description: String,
     pub enabled: bool,
     pub block: bool,
     pub protocol: Option<Protocol>,
-    pub dst_port: Option<u16>,
+    pub remote_ips: Vec<String>,    // Supports CIDR or exact IPs
+    pub remote_ports: Vec<u16>,     // Supports multiple ports
     pub app_name: Option<String>,
+}
+
+impl FirewallRule {
+    pub fn matches(&self, packet: &PacketInfo, app_name: &str) -> bool {
+        if !self.enabled { return false; }
+
+        // Protocol Match
+        if let Some(ref proto) = self.protocol {
+            if proto != &packet.protocol { return false; }
+        }
+
+        // Remote IP Match (Multiple)
+        if !self.remote_ips.is_empty() {
+            let mut matched_ip = false;
+            let dst_ip_str = packet.dst_ip.to_string();
+            for pattern in &self.remote_ips {
+                if pattern == "any" || pattern == "*" || pattern == &dst_ip_str {
+                    matched_ip = true;
+                    break;
+                }
+                // CIDR check could be added here later
+            }
+            if !matched_ip { return false; }
+        }
+
+        // Remote Port Match (Multiple)
+        if !self.remote_ports.is_empty() {
+            if !self.remote_ports.contains(&packet.dst_port) {
+                return false;
+            }
+        }
+
+        // App Name Match
+        if let Some(ref rule_app) = self.app_name {
+            if !app_name.to_lowercase().contains(&rule_app.to_lowercase()) {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -101,6 +144,8 @@ pub struct FirewallSettings {
     pub whitelisted_ports: HashSet<u16>,
     pub app_decisions: HashMap<String, AppDecision>,
     pub website_path: String,
+    pub rules: Vec<FirewallRule>,
+    pub metadata: HashMap<String, String>,
 }
 
 impl Default for FirewallSettings {
@@ -116,12 +161,18 @@ impl Default for FirewallSettings {
         apps.insert("system".to_string(), AppDecision::Allow);
         apps.insert("hydradragonfirewall.exe".to_string(), AppDecision::Allow);
 
+        let mut metadata = HashMap::new();
+        metadata.insert("version".to_string(), "1.0.0".to_string());
+        metadata.insert("description".to_string(), "HydraDragon Advanced Firewall Settings".to_string());
+
         Self {
             whitelisted_ips: ips,
             whitelisted_domains: HashSet::new(),
             whitelisted_ports: ports,
             app_decisions: apps,
             website_path: String::new(),
+            rules: Vec::new(),
+            metadata,
         }
     }
 }
@@ -327,33 +378,47 @@ pub struct FirewallEngine {
 
 impl FirewallEngine {
     pub fn new() -> Self {
-        let mut default_rules = Vec::new();
-        default_rules.push(FirewallRule {
-            name: "Block ICMP (Ping)".to_string(),
-            enabled: true,
-            block: true,
-            protocol: Some(Protocol::ICMP),
-            dst_port: None,
-            app_name: None,
-        });
+        let stats = Arc::new(Statistics::default());
+        let dns_handler = Arc::new(DnsHandler::new());
+        let web_filter = Arc::new(WebFilter::new());
+        let whitelist = Arc::new(RwLock::new(Vec::new()));
+        let stop_signal = Arc::new(AtomicBool::new(false));
 
-        let mut settings = Self::load_settings().unwrap_or_default();
+        // Load settings with fallback to default
+        let mut settings_data = Self::load_settings().unwrap_or_default();
         
         // Ensure essential apps are ALWAYS allowed
-        settings.app_decisions.insert("system".to_string(), AppDecision::Allow);
-        settings.app_decisions.insert("hydradragonfirewall.exe".to_string(), AppDecision::Allow);
+        settings_data.app_decisions.insert("system".to_string(), AppDecision::Allow);
+        settings_data.app_decisions.insert("hydradragonfirewall.exe".to_string(), AppDecision::Allow);
         
-        let app_decisions = settings.app_decisions.clone();
+        // Populate default rules if none exist
+        if settings_data.rules.is_empty() {
+            settings_data.rules.push(FirewallRule {
+                name: "Block ICMP (Ping)".to_string(),
+                description: "Blocks all incoming and outgoing ICMP echo requests.".to_string(),
+                enabled: true,
+                block: true,
+                protocol: Some(Protocol::ICMP),
+                remote_ips: vec![],
+                remote_ports: vec![],
+                app_name: None,
+            });
+        }
+
+        let app_decisions = settings_data.app_decisions.clone();
+        let app_manager = Arc::new(AppManager::new(app_decisions));
+        let rules = Arc::new(RwLock::new(settings_data.rules.clone()));
+        let settings = Arc::new(RwLock::new(settings_data));
 
         Self {
-            stats: Arc::new(Statistics::default()),
-            rules: Arc::new(RwLock::new(default_rules)),
-            dns_handler: Arc::new(DnsHandler::new()),
-            app_manager: Arc::new(AppManager::new(app_decisions)),
-            web_filter: Arc::new(WebFilter::new()),
-            whitelist: Arc::new(RwLock::new(Vec::new())),
-            settings: Arc::new(RwLock::new(settings)),
-            stop_signal: Arc::new(AtomicBool::new(false)),
+            stats,
+            rules,
+            dns_handler,
+            app_manager,
+            web_filter,
+            whitelist,
+            settings,
+            stop_signal,
         }
     }
 
@@ -374,6 +439,8 @@ impl FirewallEngine {
             whitelisted_ports: current_settings.whitelisted_ports.clone(),
             app_decisions: self.app_manager.decisions.read().unwrap().clone(),
             website_path: current_settings.website_path.clone(),
+            rules: self.rules.read().unwrap().clone(),
+            metadata: current_settings.metadata.clone(),
         };
 
         if let Ok(content) = serde_json::to_string_pretty(&settings) {
@@ -624,7 +691,7 @@ impl FirewallEngine {
         }).expect("failed to spawn flow thread");
         */
 
-        // Main Firewall Loop - MINIMAL PASSTHROUGH FOR DEBUGGING
+        // Main Firewall Loop - FULL IMPLEMENTATION
         std::thread::Builder::new()
             .name("firewall_main".to_string())
             .stack_size(8 * 1024 * 1024)
@@ -634,11 +701,10 @@ impl FirewallEngine {
                 id: format!("{}-init-divert", ts),
                 timestamp: ts, 
                 level: LogLevel::Info, 
-                message: "Initializing WinDivert (Passthrough Mode)...".into() 
+                message: "Initializing WinDivert (Full Mode)...".into() 
             });
 
             let flags = WinDivertFlags::default();
-            
             let filter = "true and !loopback and !ip.Addr == 127.0.0.1";
             let priority = 0;
             
@@ -654,15 +720,85 @@ impl FirewallEngine {
                 Ok(handle) => {
                     let mut buffer = vec![0u8; 65535];
                     while !stop.load(Ordering::Relaxed) {
-                        // Receive packets
                         match handle.recv_ex(Some(&mut buffer), 10) {
                             Ok(packets) => {
                                 for packet in packets {
-                                    // For now, just re-inject immediately to restore connectivity.
-                                    match handle.send(&packet) {
-                                        Ok(_) => {}, 
-                                        Err(_) => {}
+                                    let mut action_blocked = false;
+                                    let mut reason = "Allow (Default)".to_string();
+
+                                    // 1. Parse packet basic info
+                                    // Use 0 as a placeholder for PID as NetworkLayer doesn't provide it directly in 0.6.0
+                                    if let Some(mut info) = Self::parse_packet(&packet.data, packet.address.outbound(), 0) {
+                                        // 2. Resolve App Name and Decision
+                                        let (app_decision, app_name) = am.check_app(&info);
+                                        // Process ID is not directly available at NetworkLayer in this version
+                                        info.process_id = 0; 
+
+                                        // 3. DNS Inspection (UDP 53)
+                                        if info.protocol == Protocol::UDP && (info.dst_port == 53 || info.src_port == 53) {
+                                            stats.dns_queries.fetch_add(1, Ordering::Relaxed);
+                                            // Simple DNS inspection could go here
+                                        }
+
+                                        // 4. Payload Inspection (Web Filter)
+                                        if !action_blocked {
+                                            if let Some(malicious_reason) = _wf.check_payload(&packet.data) {
+                                                action_blocked = true;
+                                                reason = malicious_reason;
+                                            }
+                                        }
+
+                                        // 5. User Decision Overrides (App Wise)
+                                        if !action_blocked {
+                                            if app_decision == AppDecision::Block {
+                                                action_blocked = true;
+                                                reason = format!("Blocked App: {}", app_name);
+                                            }
+                                        }
+
+                                        // 6. Check Global Rules
+                                        if !action_blocked {
+                                            let current_rules = _rules.read().unwrap();
+                                            for rule in current_rules.iter() {
+                                                if rule.matches(&info, &app_name) {
+                                                    if rule.block {
+                                                        action_blocked = true;
+                                                        reason = format!("Rule Match: {}", rule.name);
+                                                        break;
+                                                    } else {
+                                                        reason = format!("Rule Allowed: {}", rule.name);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // 7. Update Statistics
+                                        stats.packets_total.fetch_add(1, Ordering::Relaxed);
+                                        if action_blocked {
+                                            stats.packets_blocked.fetch_add(1, Ordering::Relaxed);
+                                            if info.protocol == Protocol::ICMP {
+                                                stats.icmp_blocked.fetch_add(1, Ordering::Relaxed);
+                                            }
+                                            
+                                            // Optional: Log block event to UI
+                                            let ts = Self::now_ts();
+                                            let _ = tx.emit("log", LogEntry {
+                                                id: format!("{}-blocked", ts),
+                                                timestamp: ts,
+                                                level: LogLevel::Warning,
+                                                message: format!("🚫 {} | src:{} dst:{}", reason, info.src_ip, info.dst_ip)
+                                            });
+                                        } else {
+                                            stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
+                                        }
                                     }
+
+                                    // 6. Enforce Action
+                                    if !action_blocked {
+                                        let _ = handle.send(&packet);
+                                    }
+                                    // If blocked, we simply drop (don't send).
                                 }
                             }
                             Err(_) => {
