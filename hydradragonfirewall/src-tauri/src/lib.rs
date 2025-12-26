@@ -5,7 +5,7 @@ pub mod web_filter;
 use std::sync::Arc;
 
 use crate::engine::{FirewallEngine, WhitelistEntry};
-use tauri::{AppHandle, Manager, State, Emitter};
+use tauri::{AppHandle, Manager, State};
 
 pub fn run() {
     println!("DEBUG: Initializing Tauri Builder (with mod engine)...");

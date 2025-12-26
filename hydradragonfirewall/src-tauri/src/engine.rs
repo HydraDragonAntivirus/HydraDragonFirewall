@@ -1,13 +1,13 @@
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::{Ipv4Addr, IpAddr};
+use std::net::Ipv4Addr;
 use std::time::{SystemTime, Duration, UNIX_EPOCH};
 use std::path::PathBuf;
 use std::fs;
 use serde::{Serialize, Deserialize};
-use tauri::{AppHandle, Manager, Emitter};
-use windivert::prelude::*;
+use tauri::{AppHandle, Emitter};
+
 use crate::web_filter::WebFilter;
 use crate::injector::Injector;
 
@@ -60,6 +60,7 @@ pub struct LogEntry {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum AppDecision {
     Pending,
     Allow,
@@ -99,6 +100,7 @@ pub struct FirewallSettings {
     pub whitelisted_domains: HashSet<String>,
     pub whitelisted_ports: HashSet<u16>,
     pub app_decisions: HashMap<String, AppDecision>,
+    pub website_path: String,
 }
 
 impl Default for FirewallSettings {
@@ -119,6 +121,7 @@ impl Default for FirewallSettings {
             whitelisted_domains: HashSet::new(),
             whitelisted_ports: ports,
             app_decisions: apps,
+            website_path: String::new(),
         }
     }
 }
@@ -267,6 +270,16 @@ impl AppManager {
         let app_name = Self::get_app_name(pid);
         let app_name_lower = app_name.to_lowercase();
 
+        // Explicit self-bypass: always allow the firewall itself and system processes
+        if pid == std::process::id() 
+            || app_name_lower == "hydradragonfirewall.exe" 
+            || app_name_lower == "system" 
+            || pid == 0 
+            || pid == 4 
+        {
+            return (AppDecision::Allow, app_name);
+        }
+
         {
             let decisions = self.decisions.read().unwrap();
             if let Some(decision) = decisions.get(&app_name_lower) {
@@ -324,7 +337,12 @@ impl FirewallEngine {
             app_name: None,
         });
 
-        let settings = Self::load_settings().unwrap_or_default();
+        let mut settings = Self::load_settings().unwrap_or_default();
+        
+        // Ensure essential apps are ALWAYS allowed
+        settings.app_decisions.insert("system".to_string(), AppDecision::Allow);
+        settings.app_decisions.insert("hydradragonfirewall.exe".to_string(), AppDecision::Allow);
+        
         let app_decisions = settings.app_decisions.clone();
 
         Self {
@@ -355,6 +373,7 @@ impl FirewallEngine {
             whitelisted_domains: current_settings.whitelisted_domains.clone(),
             whitelisted_ports: current_settings.whitelisted_ports.clone(),
             app_decisions: self.app_manager.decisions.read().unwrap().clone(),
+            website_path: current_settings.website_path.clone(),
         };
 
         if let Ok(content) = serde_json::to_string_pretty(&settings) {
@@ -384,12 +403,12 @@ impl FirewallEngine {
 
     pub fn start(&self, app_handle: AppHandle) {
         let stats = Arc::clone(&self.stats);
-        let rules = Arc::clone(&self.rules);
-        let dns = Arc::clone(&self.dns_handler);
+        let _rules = Arc::clone(&self.rules);
+        let _dns = Arc::clone(&self.dns_handler);
         let am = Arc::clone(&self.app_manager);
-        let wf = Arc::clone(&self.web_filter);
+        let _wf = Arc::clone(&self.web_filter);
         let stop = Arc::clone(&self.stop_signal);
-        let whitelist = Arc::clone(&self.whitelist);
+        let _whitelist = Arc::clone(&self.whitelist);
         let tx = app_handle.clone();
         let settings_arc = Arc::clone(&self.settings);
 
@@ -399,14 +418,22 @@ impl FirewallEngine {
         let wf_loader = Arc::clone(&self.web_filter);
         let tx_loader = app_handle.clone();
         
+        let settings_arc_loader = Arc::clone(&settings_arc);
         std::thread::Builder::new()
             .name("web_filter_loader".to_string())
             .stack_size(8 * 1024 * 1024) // 8MB Stack
             .spawn(move || {
                 // use PathBuf and fs from top-level imports line 7 and 8
                 
-                // Try multiple absolute and relative paths
+                // Try paths: 1. From settings, 2. Auto-discovery
                 let mut paths = Vec::new();
+                
+                {
+                    let s = settings_arc_loader.read().unwrap();
+                    if !s.website_path.is_empty() {
+                        paths.push(PathBuf::from(&s.website_path));
+                    }
+                }
                 
                 // Get current executable directory
                 if let Ok(exe_path) = std::env::current_exe() {
@@ -539,9 +566,14 @@ impl FirewallEngine {
                 }
         }).expect("failed to spawn web_filter_loader thread");
 
+        // Socket and Flow layers temporarily disabled for passthrough testing
+        // These will be re-enabled once basic packet forwarding is confirmed working
+        let _am_socket = Arc::clone(&am);
+        let _stop_socket = Arc::clone(&stop);
+        let _am_flow = Arc::clone(&am);
+        let _stop_flow = Arc::clone(&stop);
+        /*
         // Socket Layer (PID Tracking)
-        let am_socket = Arc::clone(&am);
-        let stop_socket = Arc::clone(&stop);
         std::thread::Builder::new()
             .name("socket_layer".to_string())
             .stack_size(8 * 1024 * 1024)
@@ -551,7 +583,8 @@ impl FirewallEngine {
              flags.set_recv_only();
              if let Ok(handle) = WinDivert::socket("true", 0, flags) {
                  while !stop_socket.load(std::sync::atomic::Ordering::Relaxed) {
-                     if let Ok(packets) = handle.recv_ex(10) {
+                     if let Ok(packet) = handle.recv() {
+                         let packets = vec![packet];
                          for packet in packets {
                              let addr = &packet.address;
                              let pid = addr.process_id();
@@ -566,8 +599,6 @@ impl FirewallEngine {
         }).expect("failed to spawn socket thread");
         
         // Flow Layer (PID Tracking)
-        let am_flow = Arc::clone(&am);
-        let stop_flow = Arc::clone(&stop);
         std::thread::Builder::new()
             .name("flow_layer".to_string())
             .stack_size(8 * 1024 * 1024)
@@ -577,7 +608,8 @@ impl FirewallEngine {
             flags.set_recv_only();
             if let Ok(handle) = WinDivert::flow("true", 0, flags) {
                  while !stop_flow.load(std::sync::atomic::Ordering::Relaxed) {
-                     if let Ok(packets) = handle.recv_ex(10) {
+                     if let Ok(packet) = handle.recv() {
+                         let packets = vec![packet];
                          for packet in packets {
                              let addr = &packet.address;
                              let pid = addr.process_id();
@@ -590,8 +622,9 @@ impl FirewallEngine {
                  }
             }
         }).expect("failed to spawn flow thread");
+        */
 
-        // Main Firewall Loop
+        // Main Firewall Loop - MINIMAL PASSTHROUGH FOR DEBUGGING
         std::thread::Builder::new()
             .name("firewall_main".to_string())
             .stack_size(8 * 1024 * 1024)
@@ -601,168 +634,27 @@ impl FirewallEngine {
                 id: format!("{}-init-divert", ts),
                 timestamp: ts, 
                 level: LogLevel::Info, 
-                message: "Initializing WinDivert...".into() 
+                message: "Initializing WinDivert (Passthrough Mode)...".into() 
             });
 
-            // Note: In real production, filter should be robust. "true" captures everything.
-            let filter = "not loopback"; 
-            let handle = match WinDivert::network(filter, 0, WinDivertFlags::new()) {
-                Ok(h) => {
-                    let ts = Self::now_ts();
-                    let _ = tx.emit("log", LogEntry { 
-                        id: format!("{}-divert-active", ts),
-                        timestamp: ts, 
-                        level: LogLevel::Success, 
-                        message: "✅ WinDivert initialized. Protection Active.".into() 
-                    });
-                    h
-                },
-                Err(e) => {
-                    let ts = Self::now_ts();
-                    let _ = tx.emit("log", LogEntry { 
-                        id: format!("{}-divert-fail", ts),
-                        timestamp: ts, 
-                        level: LogLevel::Error, 
-                        message: format!("❌ WinDivert failed: {}", e) 
-                    });
-                    return;
-                }
-            };
-            
-            let mut buffer = vec![0u8; 65535];
-            let mut counter = 0u64;
+            // SAFETY MODE: WINDIVERT DISABLED (While debugging FFI)
+            let ts = Self::now_ts();
+            let _ = tx.emit("log", LogEntry { 
+                id: format!("{}-divert-disabled", ts),
+                timestamp: ts, 
+                level: LogLevel::Warning, 
+                message: "⚠️ Firewall Engine DISABLED (Safety Mode). Debugging FFI signatures.".into() 
+            });
 
+            // Clean shutdown loop
             while !stop.load(Ordering::Relaxed) {
-                let timeout = Duration::from_millis(10);
-                let recv_result = handle.recv_ex(Some(&mut buffer), timeout.as_millis() as usize);
-                if recv_result.is_err() { continue; }
-                let packets = recv_result.unwrap();
-
-                for packet in packets {
-                    counter += 1;
-                    stats.packets_total.fetch_add(1, Ordering::Relaxed);
-                    
-                    let data = &packet.data;
-                    let addr = &packet.address;
-                    let outbound = addr.outbound();
-                    let is_divert_lb = addr.loopback();
-                    
-                    let pid = 0u32; // addr.process_id() not available for NetworkLayer
-                    let packet_info = match Self::parse_packet(data, outbound, pid) {
-                        Some(p) => p,
-                        None => { 
-                             let _ = handle.send(&packet); 
-                             continue; 
-                        }
-                    };
-
-                    let mut should_block = false;
-                    let mut block_reason = String::new();
-
-                    // 0. Firewall Self-Bypass - ensures we don't block our own traffic
-                    let mut resolved_pid = packet_info.process_id;
-                    if resolved_pid == 0 {
-                        if packet_info.outbound {
-                            if let Some(p) = am.get_pid_for_port(packet_info.src_port) { resolved_pid = p; }
-                        } else {
-                            if let Some(p) = am.get_pid_for_port(packet_info.dst_port) { resolved_pid = p; }
-                        }
-                    }
-
-                    if resolved_pid > 0 && resolved_pid == std::process::id() {
-                        let _ = handle.send(&packet);
-                        continue;
-                    }
-
-                    // 1. Whitelist Check (Loopback, Settings)
-                    if !should_block {
-                        let is_lb = is_divert_lb || Self::is_loopback(packet_info.dst_ip) || Self::is_loopback(packet_info.src_ip);
-                        let s = settings_arc.read().unwrap();
-                        
-                        let ip_whitelisted = s.whitelisted_ips.contains(&packet_info.dst_ip.to_string()) || 
-                                           s.whitelisted_ips.contains(&packet_info.src_ip.to_string());
-                        
-                        let port_whitelisted = s.whitelisted_ports.contains(&packet_info.dst_port) || 
-                                             s.whitelisted_ports.contains(&packet_info.src_port);
-
-                        if is_lb || ip_whitelisted || port_whitelisted {
-                            // Allowed by whitelist or loopback - bypass further checks
-                            let _ = handle.send(&packet);
-                            stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        } else {
-                            let wl = whitelist.read().unwrap();
-                            if wl.iter().any(|w| w.item == packet_info.dst_ip.to_string() || w.item == packet_info.src_ip.to_string()) {
-                                // Whitelisted by dynamic list - bypass further checks
-                                let _ = handle.send(&packet);
-                                stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
-                                continue;
-                            } else {
-                                // 2. Web Filter
-                                if outbound && packet_info.protocol == Protocol::TCP { 
-                                    if wf.is_blocked_ip(IpAddr::V4(packet_info.dst_ip)) {
-                                        should_block = true;
-                                        block_reason = format!("Malicious IP: {}", packet_info.dst_ip);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // 3. App Decision
-                    if !should_block && outbound {
-                        let (decision, name) = am.check_app(&packet_info);
-                        if decision == AppDecision::Block {
-                            should_block = true;
-                            block_reason = format!("App Blocked: {}", name);
-                        } else if decision == AppDecision::Pending {
-                            // Emit event to UI to "Ask"
-                            let ts = Self::now_ts();
-                            let _ = tx.emit("ask_app_decision", PendingApp {
-                                process_id: resolved_pid,
-                                name: name.clone(),
-                                dst_ip: packet_info.dst_ip,
-                                dst_port: packet_info.dst_port,
-                                protocol: packet_info.protocol.clone(),
-                            });
-                            
-                            // For now, we allow pending until user blocks it, or we could block until user allows.
-                            // The user said "it should ask instead", implying we should block/wait.
-                            // "firewall blocks edr sanctum gui... it should ask instead"
-                            // If we block pending, the GUI might hang. If we allow pending, it's safer for usability.
-                            // BUT since it's a firewall, "Pending" usually means "Block until decided" for strictness.
-                            // Let's stick to allowing it for now to avoid hanging the user's GUI, 
-                            // but show the prompt. If user wants "Strict", they can change policy.
-                        }
-                    }
-                    
-                    // 4. ICMP Block
-                    if !should_block && packet_info.protocol == Protocol::ICMP {
-                         let rg = rules.read().unwrap();
-                         if rg.iter().any(|r| r.enabled && r.block && r.protocol == Some(Protocol::ICMP)) {
-                             should_block = true;
-                             block_reason = "ICMP Blocked".into();
-                             stats.icmp_blocked.fetch_add(1, Ordering::Relaxed);
-                         }
-                    }
-
-                    if should_block {
-                        stats.packets_blocked.fetch_add(1, Ordering::Relaxed);
-                        let ts = Self::now_ts();
-                        let _ = tx.emit("log", LogEntry { 
-                            id: format!("{}-block-{}", ts, counter),
-                            timestamp: ts, 
-                            level: LogLevel::Warning, 
-                            message: format!("Blocking: {}", block_reason) 
-                        });
-                    } else {
-                        stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
-                        let _ = handle.send(&packet);
-                    }
-                }
+                std::thread::sleep(Duration::from_secs(1));
             }
         }).expect("failed to spawn main firewall thread");
     }
+
+    // DEBUG HELPER: Force compiler to show us the signature of WinDivertHelperCalcChecksums
+
 
     pub fn inject_dll(&self, pid: u32, dll_path: &str) -> bool {
         Injector::inject(pid, dll_path).is_ok()
@@ -770,6 +662,16 @@ impl FirewallEngine {
 
     fn now_ts() -> u64 {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+    }
+
+    fn log_to_file(message: &str) {
+        let ts = Self::now_ts();
+        let log_line = format!("[{}] {}\n", ts, message);
+        let _ = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("firewall.log")
+            .and_then(|mut f| std::io::Write::write_all(&mut f, log_line.as_bytes()));
     }
 
     fn parse_packet(data: &[u8], outbound: bool, process_id: u32) -> Option<PacketInfo> {
