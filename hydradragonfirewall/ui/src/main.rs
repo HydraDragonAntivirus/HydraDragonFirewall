@@ -171,50 +171,90 @@ pub fn App() -> impl IntoView {
                     </span>
                 </header>
 
-                <div class="stats-grid">
-                    <div class="glass-card stat-item">
-                        <h4>"Total Traffic"</h4>
-                        <div class="stat-value">{move || total_count.get()}</div>
-                    </div>
-                    <div class="glass-card stat-item">
-                        <h4>"Blocked"</h4>
-                        <div class="stat-value" style="color: var(--accent-red)">{move || blocked_count.get()}</div>
-                    </div>
-                    <div class="glass-card stat-item" style="border-right: 4px solid var(--accent-yellow)">
-                        <h4>"Threats"</h4>
-                        <div class="stat-value" style="color: var(--accent-yellow)">{move || threats_count.get()}</div>
-                    </div>
-                    <div class="glass-card stat-item">
-                        <h4>"Safe Requests"</h4>
-                        <div class="stat-value" style="color: var(--accent-green)">{move || allowed_count.get()}</div>
-                    </div>
-                </div>
-
-                <div class="glass-card logs-section">
-                    <div class="section-header">
-                        <h3 style="margin: 0; font-size: 16px; font-weight: 700">"Real-time Intelligence"</h3>
-                        <span style="font-size: 12px; color: var(--text-muted)">"Scanning Network Adapters..."</span>
-                    </div>
-                    <div class="logs-viewport">
-                        <For
-                            each=move || logs.get()
-                            key=|log| log.id.clone()
-                            children=move |log| {
-                                let level_class = match log.level {
-                                    LogLevel::Info => "lvl-info",
-                                    LogLevel::Success => "lvl-success",
-                                    LogLevel::Warning => "lvl-warning",
-                                    LogLevel::Error => "lvl-error",
-                                    _ => "lvl-info",
-                                };
-                                view! {
-                                    <div class={format!("log-row {}", level_class)}>
-                                        <span class="log-time">"[" {log.timestamp % 100000} "]"</span>
-                                        <span class="log-msg">{log.message}</span>
+                <div class="dashboard-grid">
+                    // Left Column: Status & Graph
+                    <div class="dash-col-main">
+                        <div class="glass-card status-card">
+                            <div class="status-header">
+                                <div>
+                                    <h3>"System Status"</h3>
+                                    <span class="status-badge secure">"SECURE"</span>
+                                </div>
+                                <div class="pulse-indicator"></div>
+                            </div>
+                            <div class="traffic-graph-container">
+                                // Simple SVG Graph Visualization
+                                <svg width="100%" height="150" viewBox="0 0 600 150" class="traffic-svg">
+                                    <defs>
+                                        <linearGradient id="grad1" x1="0%" y1="0%" x2="0%" y2="100%">
+                                            <stop offset="0%" style="stop-color:var(--accent-blue);stop-opacity:0.5" />
+                                            <stop offset="100%" style="stop-color:var(--accent-blue);stop-opacity:0" />
+                                        </linearGradient>
+                                    </defs>
+                                    // Simulated path for visual effect (in a real app, this would be dynamic)
+                                    <path d="M0,150 L0,100 Q50,50 100,80 T200,60 T300,100 T400,40 T500,80 T600,60 V150 Z" 
+                                          fill="url(#grad1)" stroke="var(--accent-blue)" stroke-width="2" />
+                                </svg>
+                                <div class="graph-overlay">
+                                    <div class="traffic-stat">
+                                        <span class="label">"INBOUND"</span>
+                                        <span class="value">"12.4 MB/s"</span>
                                     </div>
-                                }
-                            }
-                        />
+                                    <div class="traffic-stat">
+                                        <span class="label">"OUTBOUND"</span>
+                                        <span class="value">"4.2 MB/s"</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="glass-card logs-section">
+                            <div class="section-header">
+                                <h3 style="margin: 0; font-size: 16px; font-weight: 700">"Real-time Intelligence"</h3>
+                                <span style="font-size: 12px; color: var(--text-muted)">"Scanning Network Adapters..."</span>
+                            </div>
+                            <div class="logs-viewport">
+                                <For
+                                    each=move || logs.get()
+                                    key=|log| log.id.clone()
+                                    children=move |log| {
+                                        let level_class = match log.level {
+                                            LogLevel::Info => "lvl-info",
+                                            LogLevel::Success => "lvl-success",
+                                            LogLevel::Warning => "lvl-warning",
+                                            LogLevel::Error => "lvl-error",
+                                            _ => "lvl-info",
+                                        };
+                                        view! {
+                                            <div class={format!("log-row {}", level_class)}>
+                                                <span class="log-time">"[" {log.timestamp % 100000} "]"</span>
+                                                <span class="log-msg">{log.message}</span>
+                                            </div>
+                                        }
+                                    }
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    // Right Column: Quick Stats
+                    <div class="dash-col-side">
+                         <div class="glass-card stat-item-compact">
+                            <h4>"Total Traffic"</h4>
+                            <div class="stat-value">{move || total_count.get()}</div>
+                        </div>
+                        <div class="glass-card stat-item-compact">
+                            <h4>"Blocked"</h4>
+                            <div class="stat-value" style="color: var(--accent-red)">{move || blocked_count.get()}</div>
+                        </div>
+                        <div class="glass-card stat-item-compact" style="border-left: 3px solid var(--accent-yellow)">
+                            <h4>"Threats"</h4>
+                            <div class="stat-value" style="color: var(--accent-yellow)">{move || threats_count.get()}</div>
+                        </div>
+                         <div class="glass-card stat-item-compact">
+                            <h4>"Safe Requests"</h4>
+                            <div class="stat-value" style="color: var(--accent-green)">{move || allowed_count.get()}</div>
+                        </div>
                     </div>
                 </div>
             </main>

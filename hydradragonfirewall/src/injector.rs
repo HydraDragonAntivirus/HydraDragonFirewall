@@ -1,5 +1,5 @@
 use std::ffi::CString;
-use windows::Win32::Foundation::{BOOL, CloseHandle};
+use windows::Win32::Foundation::{CloseHandle};
 use windows::Win32::System::Memory::{
     VirtualAllocEx, MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE,
 };
@@ -19,7 +19,7 @@ impl Injector {
         unsafe {
             let process_handle = OpenProcess(
                 PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
-                BOOL::from(false),
+                false.into(),
                 pid,
             ).map_err(|e| format!("OpenProcess failed: {}", e))?;
 
@@ -54,12 +54,8 @@ impl Injector {
                 Some(&mut bytes_written),
             );
 
-            // WriteProcessMemory returns BOOL
+            // WriteProcessMemory returns BOOL (wrapped in Result by windows-rs)
             if write_result.is_err() || bytes_written != dll_path_len {
-                 // Wait, WriteProcessMemory returns Result<()> in newer windows-rs?
-                 // Error checking above might be wrong if signature changed.
-                 // Checking docs: WriteProcessMemory returns Result<()>.
-                 // So write_result.is_err() is correct.
                 let _ = CloseHandle(process_handle);
                 return Err("WriteProcessMemory failed".to_string());
             }

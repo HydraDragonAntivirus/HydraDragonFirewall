@@ -129,15 +129,24 @@ impl WebFilter {
         }
     }
 
-    pub fn check_payload(&self, payload: &[u8]) -> Option<String> {
+    pub fn check_payload(&self, payload: &[u8], settings: &crate::engine::FirewallSettings) -> Option<String> {
         // 1. Convert to string (lossy) to check regex
         // We only check the first 2KB for efficiency
-        let scan_len = std::cmp::min(payload.len(), 2048);
+        let scan_len = std::cmp::min(payload.len(), 4096); // Increased default scan
         if scan_len == 0 { return None; }
         
         let text = String::from_utf8_lossy(&payload[..scan_len]);
+        let text_lower = text.to_lowercase();
         
+        // Dynamic Keyword Scan from Settings
+        for keyword in &settings.blocked_keywords {
+            if text_lower.contains(&keyword.to_lowercase()) {
+                return Some(format!("Blocked Keyword: {}", keyword));
+            }
+        }
+
         // Check regexes using lazy_static patterns (compiled on first use)
+        // These can be toggled in future updates via settings if needed
         if DISCORD_WEBHOOK_REGEX.is_match(&text) {
             return Some(format!("Regex Match: Discord Webhook"));
         }
@@ -150,7 +159,7 @@ impl WebFilter {
 
         // 2. Check for Host header (HTTP)
         // Find "Host: "
-        if let Some(host_idx) = text.to_lowercase().find("host: ") {
+        if let Some(host_idx) = text_lower.find("host: ") {
             let start = host_idx + 6;
             if let Some(end) = text[start..].find("\r\n") {
                  let host = text[start..start+end].trim().to_lowercase();
@@ -160,6 +169,13 @@ impl WebFilter {
                  if self.domain_blocklist.read().unwrap().contains(host_name) {
                      return Some(format!("Blocked Domain: {}", host_name));
                  }
+                 
+                 // Also check dynamic keywords in Host header specifically
+                 for keyword in &settings.blocked_keywords {
+                    if host_name.contains(&keyword.to_lowercase()) {
+                        return Some(format!("Blocked Host Keyword: {}", keyword));
+                    }
+                }
             }
         }
         
