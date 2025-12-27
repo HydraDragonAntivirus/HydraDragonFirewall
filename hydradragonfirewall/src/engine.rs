@@ -563,7 +563,6 @@ impl FirewallEngine {
         
         std::thread::Builder::new()
             .name("web_filter_loader".to_string())
-            .stack_size(8 * 1024 * 1024)
             .spawn(move || {
                 // ... (simplified callback for brevity, or assuming logic exists elsewhere?) 
                 // We'll just put a simple log here to not bloat this step.
@@ -598,7 +597,6 @@ impl FirewallEngine {
             
             std::thread::Builder::new()
                 .name(format!("packet_worker_{}", worker_id))
-                .stack_size(2 * 1024 * 1024)
                 .spawn(move || {
                     while !stop_w.load(Ordering::Relaxed) {
                         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -627,7 +625,6 @@ impl FirewallEngine {
         // Capture Thread
         std::thread::Builder::new()
             .name("firewall_capture".to_string())
-            .stack_size(4 * 1024 * 1024)
             .spawn(move || {
                 if let Some(ref api) = *WINDIVERT_API {
                     let filter_c = std::ffi::CString::new("true and !loopback and !ip.Addr == 127.0.0.1").unwrap();

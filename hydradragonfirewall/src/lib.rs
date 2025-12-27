@@ -4,37 +4,47 @@ pub mod web_filter;
 pub mod windivert_api;
 
 use std::sync::Arc;
-
-// use crate::engine::FirewallEngine;
-use tauri::{AppHandle, Manager};
+use crate::engine::FirewallEngine;
+use tauri::{AppHandle, Manager, Runtime};
 
 #[tauri::command]
 async fn add_whitelist_entry(
-    _item: String,
-    _reason: String,
-    _category: String,
-    _handle: AppHandle
+    item: String,
+    reason: String,
+    category: String,
+    handle: AppHandle
 ) -> Result<(), String> {
-    // Mock
-    Ok(())
+    if let Some(engine) = handle.try_state::<Arc<FirewallEngine>>() {
+        engine.add_whitelist_entry(item, reason, category);
+        Ok(())
+    } else {
+        Err("Engine not initialized".to_string())
+    }
 }
 
 #[tauri::command]
 async fn resolve_app_decision(
-    _name: String,
-    _decision: String,
-    _handle: AppHandle
+    name: String,
+    decision: String,
+    handle: AppHandle
 ) -> Result<(), String> {
-    // Mock
-    Ok(())
+    if let Some(engine) = handle.try_state::<Arc<FirewallEngine>>() {
+        engine.resolve_app_decision(name, decision);
+        Ok(())
+    } else {
+        Err("Engine not initialized".to_string())
+    }
 }
 
 #[tauri::command]
-async fn get_settings(
-    _handle: AppHandle
-) -> Result<(), String> {
-    // Mock
-    Err("Not implemented".to_string())
+async fn get_settings<R: Runtime>(
+    handle: AppHandle<R>
+) -> Result<crate::engine::FirewallSettings, String> {
+    if let Some(engine) = handle.try_state::<Arc<FirewallEngine>>() {
+        Ok(engine.get_settings())
+    } else {
+        Err("Engine not initialized".to_string())
+    }
 }
 
 pub fn run() {
@@ -48,18 +58,21 @@ pub fn run() {
     builder
         .setup(|app| {
             println!("DEBUG: Entering setup closure...");
-            // let handle = app.handle().clone();
+            let handle = app.handle().clone();
             
-            // Engine init commented out for isolation
-            /*
+            // Re-enabling Engine Initialization
             std::thread::Builder::new()
                 .name("engine_init".to_string())
-                .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
-                     // ...
+                    println!("DEBUG: FirewallEngine::new() starting...");
+                    let engine = Arc::new(FirewallEngine::new());
+                    println!("DEBUG: FirewallEngine::new() finished.");
+                    
+                    engine.start(handle.clone());
+                    handle.manage(engine);
+                    println!("DEBUG: FirewallEngine managed and started.");
                 })
                 .expect("Failed to spawn engine_init thread");
-            */
 
             println!("DEBUG: setup closure finished.");
             Ok(())
