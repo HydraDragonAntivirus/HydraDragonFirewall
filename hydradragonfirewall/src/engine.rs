@@ -255,19 +255,8 @@ impl FirewallRule {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WhitelistEntry {
-    pub timestamp: u64,
-    pub item: String,
-    pub reason: String,
-    pub category: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FirewallSettings {
-    pub whitelisted_ips: HashSet<String>,
-    pub whitelisted_domains: HashSet<String>,
-    pub whitelisted_ports: HashSet<u16>,
     pub blocked_keywords: HashSet<String>, // New: Dynamic DNS blocking keywords
     pub app_decisions: HashMap<String, AppDecision>,
     pub website_path: String,
@@ -277,10 +266,6 @@ pub struct FirewallSettings {
 
 impl Default for FirewallSettings {
     fn default() -> Self {
-        let ips = HashSet::new();
-
-        let ports = HashSet::new();
-
         let apps = HashMap::new();
 
         let mut keywords = HashSet::new();
@@ -299,9 +284,6 @@ impl Default for FirewallSettings {
         metadata.insert("theme".to_string(), "cyberpunk".to_string());
 
         Self {
-            whitelisted_ips: ips,
-            whitelisted_domains: HashSet::new(),
-            whitelisted_ports: ports,
             blocked_keywords: keywords,
             app_decisions: apps,
             website_path: String::new(),
@@ -583,7 +565,6 @@ pub struct FirewallEngine {
     pub dns_handler: Arc<DnsHandler>,
     pub app_manager: Arc<AppManager>,
     pub web_filter: Arc<WebFilter>,
-    pub whitelist: Arc<RwLock<Vec<WhitelistEntry>>>,
     pub settings: Arc<RwLock<FirewallSettings>>,
     pub stop_signal: Arc<AtomicBool>,
 }
@@ -611,7 +592,6 @@ impl FirewallEngine {
         let stats = Arc::new(Statistics::default());
         let dns_handler = Arc::new(DnsHandler::new());
         let web_filter = Arc::new(WebFilter::new());
-        let whitelist = Arc::new(RwLock::new(Vec::new()));
         let stop_signal = Arc::new(AtomicBool::new(false));
 
         let mut settings_data = Self::load_settings().unwrap_or_default();
@@ -644,7 +624,6 @@ impl FirewallEngine {
             dns_handler,
             app_manager,
             web_filter,
-            whitelist,
             settings,
             stop_signal,
         }
@@ -682,9 +661,6 @@ impl FirewallEngine {
     pub fn save_settings(&self) {
         let current_settings = self.settings.read().unwrap();
         let settings = FirewallSettings {
-            whitelisted_ips: current_settings.whitelisted_ips.clone(),
-            whitelisted_domains: current_settings.whitelisted_domains.clone(),
-            whitelisted_ports: current_settings.whitelisted_ports.clone(),
             blocked_keywords: current_settings.blocked_keywords.clone(), // Save new field
             app_decisions: self.app_manager.decisions.read().unwrap().clone(),
             website_path: current_settings.website_path.clone(),
@@ -699,24 +675,6 @@ impl FirewallEngine {
 
     pub fn is_loopback(ip: Ipv4Addr) -> bool {
         ip.is_loopback() || ip == Ipv4Addr::new(127, 0, 0, 1) || ip == Ipv4Addr::new(0, 0, 0, 0)
-    }
-
-    pub fn add_whitelist_entry(&self, item: String, reason: String, category: String) {
-        let mut wl = self.whitelist.write().unwrap();
-        wl.push(WhitelistEntry {
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-            item,
-            reason,
-            category,
-        });
-    }
-
-    pub fn is_whitelisted(&self, item: &str) -> bool {
-        let wl = self.whitelist.read().unwrap();
-        wl.iter().any(|entry| entry.item == item)
     }
 
     pub fn resolve_app_decision(&self, name: String, decision: String) {
@@ -744,7 +702,6 @@ impl FirewallEngine {
         let stop = Arc::clone(&self.stop_signal);
         let tx = app_handle.clone();
         let settings_arc = Arc::clone(&self.settings);
-        let whitelist_arc = Arc::clone(&self.whitelist);
 
         // Web Filter Loader Thread
         let wf_loader = Arc::clone(&self.web_filter);
@@ -956,7 +913,6 @@ impl FirewallEngine {
             let settings_w = Arc::clone(&settings_arc);
             let dns_w = Arc::clone(&dns);
             let tx_log = app_handle.clone();
-            let wl_w = Arc::clone(&whitelist_arc);
             let divert_w = divert.clone();
 
             std::thread::Builder::new()
@@ -994,7 +950,6 @@ impl FirewallEngine {
                                     &wf_w,
                                     &settings_w,
                                     &dns_w,
-                                    &wl_w,
                                     &tx_log,
                                     pid,
                                 );
@@ -1038,7 +993,6 @@ impl FirewallEngine {
         wf: &Arc<WebFilter>,
         settings: &Arc<RwLock<FirewallSettings>>,
         dns_handler: &Arc<DnsHandler>,
-        whitelist: &Arc<RwLock<Vec<WhitelistEntry>>>,
         tx: &AppHandle,
         process_id: u32,
     ) -> PacketDecision {
@@ -1082,28 +1036,7 @@ impl FirewallEngine {
                 && (info.src_port == 53 || info.dst_port == 53);
             let dns_domain = info.dns_query.clone();
             // println!("DEBUG: Packet Parsed: {} -> {}", info.src_ip, info.dst_ip);
-            // 1. Check Global Whitelist (Dynamic)
-            {
-                let wl = whitelist.read().unwrap();
-                for entry in wl.iter() {
-                    if entry.item == info.src_ip.to_string()
-                        || entry.item == info.dst_ip.to_string()
-                    {
-                        should_forward = true;
-                        reason = format!("Whitelisted: {}", entry.item);
-                        break;
-                    }
-                    if let Some(ref host) = info.hostname {
-                        if host == &entry.item {
-                            should_forward = true;
-                            reason = format!("Whitelisted Host: {}", entry.item);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // 2. Check Static Whitelist and Keywords from Settings
+            // 1. Enforce keyword and signature checks without any implicit whitelist
             let settings_lock = settings.read().unwrap();
 
             // DNS keyword filtering happens before generic keyword checks so DNS-only traffic can be blocked
@@ -1113,30 +1046,6 @@ impl FirewallEngine {
                         should_forward = false;
                         reason = format!("DNS Keyword Blocked: {}", domain);
                     }
-                }
-            }
-
-            // Static IP/Domain/Port Whitelist (user-managed only)
-            if settings_lock
-                .whitelisted_ips
-                .contains(&info.src_ip.to_string())
-                || settings_lock
-                    .whitelisted_ips
-                    .contains(&info.dst_ip.to_string())
-            {
-                should_forward = true;
-                reason = "Static Whitelist IP".to_string();
-            }
-            if settings_lock.whitelisted_ports.contains(&info.src_port)
-                || settings_lock.whitelisted_ports.contains(&info.dst_port)
-            {
-                should_forward = true;
-                reason = "Static Whitelist Port".to_string();
-            }
-            if let Some(ref host) = info.hostname {
-                if settings_lock.whitelisted_domains.contains(host) {
-                    should_forward = true;
-                    reason = "Static Whitelist Domain".to_string();
                 }
             }
 
@@ -1185,7 +1094,7 @@ impl FirewallEngine {
             }
             drop(settings_lock);
 
-            // 3. App Decision Check
+            // 2. App Decision Check
             let (app_decision, app_name) = am.check_app(&info);
 
             match app_decision {
@@ -1214,7 +1123,7 @@ impl FirewallEngine {
                 AppDecision::Block => {}
             }
 
-            // 4. Web Filter Checks (Hostname/URL lists)
+            // 3. Web Filter Checks (Hostname/URL lists)
             if should_forward {
                 if let Some(ref hostname) = info.hostname {
                     if let Some(block_reason) = wf.check_hostname(hostname) {
@@ -1258,7 +1167,7 @@ impl FirewallEngine {
                 reason = format!("Blocked App: {}", app_name);
             }
 
-            // 5. Custom Firewall Rules
+            // 4. Custom Firewall Rules
             let current_rules = rules.read().unwrap();
             for rule in current_rules.iter() {
                 if rule.matches(&info, &app_name) {
