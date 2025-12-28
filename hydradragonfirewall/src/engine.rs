@@ -780,7 +780,8 @@ impl FirewallEngine {
             .expect("failed to spawn web_filter_loader thread");
 
         // OPEN WINDIVERT HANDLE ONCE
-        let divert = match WinDivert::network("true", 0, WinDivertFlags::new()) {
+        // Use socket layer so WinDivert populates process IDs directly on addresses.
+        let divert = match WinDivert::socket("true", 0, WinDivertFlags::new()) {
             Ok(d) => WinDivertArc(Arc::new(d)),
             Err(e) => {
                 let ts = Self::now_ts();
@@ -954,10 +955,10 @@ impl FirewallEngine {
                                     .to_vec()
                                 };
 
-                                // Network-layer captures don't provide process IDs. We still thread a
-                                // PID through decision-making so AppManager can resolve it via the
-                                // hook DLL's port-to-PID cache or named pipe updates.
-                                let pid = 0;
+                                // Socket-layer captures carry process IDs directly so the UI can
+                                // attribute decisions to the correct executable without depending on
+                                // hook DLL lookups.
+                                let pid = packet.address.process_id();
 
                                 let decision = Self::process_packet_decision(
                                     &packet.data,
