@@ -189,7 +189,8 @@ impl WinDivert<()> {
 
     /// Method that tries to uninstall WinDivert driver.
     pub fn uninstall() -> WinResult<()> {
-        let status: *mut SERVICE_STATUS = MaybeUninit::uninit().as_mut_ptr();
+        let mut status_uninit = MaybeUninit::<SERVICE_STATUS>::uninit();
+        let status = status_uninit.as_mut_ptr();
         unsafe {
             let manager = OpenSCManagerA(None, None, SC_MANAGER_ALL_ACCESS)?;
             let service = OpenServiceA(

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+﻿use std::collections::{HashSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, RwLock};
 use std::fs::File;
@@ -6,15 +6,7 @@ use std::path::Path;
 use std::io::BufReader;
 use regex::Regex;
 use glob::glob;
-use serde::Deserialize;
 use lazy_static::lazy_static;
-
-#[derive(Debug, Deserialize)]
-struct CsvRecord {
-    #[serde(alias = "address")] 
-    address: String,
-    // We ignore other fields like ref_ids for now
-}
 
 // Use lazy_static to compile regex patterns lazily (on first use, not on startup)
 // This prevents stack overflow during initialization
@@ -25,6 +17,12 @@ lazy_static! {
         Regex::new(r"https://cdn\.discordapp\.com/attachments/\d+/\d+/[A-Za-z0-9._-]+").unwrap();
     static ref TELEGRAM_TOKEN_REGEX: Regex = 
         Regex::new(r"[0-9]{8,10}:[a-zA-Z0-9_-]{35}").unwrap();
+        
+    // Ported from antivirus.py
+    static ref EMAIL_REGEX: Regex = 
+        Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap();
+    static ref UBLOCK_REGEX: Regex = 
+         Regex::new(r"^https?://[a-z0-9-]+\.com/ad_pattern").unwrap(); // Placeholder for actual pattern
 }
 
 #[derive(Clone)]
@@ -32,6 +30,22 @@ pub struct WebFilter {
     ipv4_blocklist: Arc<RwLock<HashSet<Ipv4Addr>>>,
     ipv6_blocklist: Arc<RwLock<HashSet<Ipv6Addr>>>,
     domain_blocklist: Arc<RwLock<HashSet<String>>>,
+    /// Blocked hostname patterns (supports wildcards like *.facebook.com)
+    blocked_hostnames: Arc<RwLock<Vec<String>>>,
+    /// Blocked URL patterns (supports wildcards)
+    /// Blocked URL patterns (supports wildcards)
+    blocked_url_patterns: Arc<RwLock<Vec<String>>>,
+    
+    // --- New Advanced Filtering Fields ---
+    email_blocklist: Arc<RwLock<HashSet<String>>>,
+    urlhaus_urls: Arc<RwLock<HashSet<String>>>,
+    _urlhaus_domains: Arc<RwLock<HashSet<String>>>,
+    reference_map: Arc<RwLock<HashMap<u32, String>>>,
+    
+    // Whitelists
+    whitelist_ipv4: Arc<RwLock<HashSet<Ipv4Addr>>>,
+    whitelist_ipv6: Arc<RwLock<HashSet<Ipv6Addr>>>,
+    whitelist_domains: Arc<RwLock<HashSet<String>>>,
 }
 
 impl WebFilter {
@@ -41,13 +55,202 @@ impl WebFilter {
             ipv4_blocklist: Arc::new(RwLock::new(HashSet::new())),
             ipv6_blocklist: Arc::new(RwLock::new(HashSet::new())),
             domain_blocklist: Arc::new(RwLock::new(HashSet::new())),
+            blocked_hostnames: Arc::new(RwLock::new(Vec::new())),
+            blocked_url_patterns: Arc::new(RwLock::new(Vec::new())),
+            
+            email_blocklist: Arc::new(RwLock::new(HashSet::new())),
+            urlhaus_urls: Arc::new(RwLock::new(HashSet::new())),
+            _urlhaus_domains: Arc::new(RwLock::new(HashSet::new())),
+            reference_map: Arc::new(RwLock::new(HashMap::new())),
+            
+            whitelist_ipv4: Arc::new(RwLock::new(HashSet::new())),
+            whitelist_ipv6: Arc::new(RwLock::new(HashSet::new())),
+            whitelist_domains: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
-    pub fn load_from_website_folder(&self, base_path: &str) -> std::io::Result<usize> {
-        let pattern = format!("{}\\*.optimized.csv", base_path);
-        let mut count = 0;
+    /// Add a hostname pattern to block (e.g., "*.facebook.com")
+    pub fn add_blocked_hostname(&self, pattern: String) {
+        self.blocked_hostnames.write().unwrap().push(pattern);
+    }
 
+    /// Add a URL pattern to block (e.g., "*malware*")
+    pub fn add_blocked_url_pattern(&self, pattern: String) {
+        self.blocked_url_patterns.write().unwrap().push(pattern);
+    }
+
+    /// Check if a hostname matches any blocked patterns
+    pub fn check_hostname(&self, hostname: &str) -> Option<String> {
+        let hostname_lower = hostname.to_lowercase();
+        
+        // 1. Check Whitelist (Priority)
+        if self.whitelist_domains.read().unwrap().contains(&hostname_lower) {
+            return None; // Allowed
+        }
+        
+        // 2. Check domain blocklist (exact match)
+        if self.domain_blocklist.read().unwrap().contains(&hostname_lower) {
+            return Some(format!("Blocked Domain: {}", hostname));
+        }
+        
+        // Check hostname patterns (wildcard match)
+        for pattern in self.blocked_hostnames.read().unwrap().iter() {
+            if Self::wildcard_match(pattern, &hostname_lower) {
+                return Some(format!("Blocked Hostname Pattern: {}", pattern));
+            }
+        }
+        
+        None
+    }
+
+    /// Check if a URL matches any blocked patterns
+    pub fn check_url(&self, url: &str) -> Option<String> {
+        let url_lower = url.to_lowercase();
+        
+        for pattern in self.blocked_url_patterns.read().unwrap().iter() {
+            if Self::wildcard_match(pattern, &url_lower) {
+                return Some(format!("Blocked URL Pattern: {}", pattern));
+            }
+        }
+        
+        None
+    }
+
+    /// Simple wildcard matching (supports * for any characters)
+    fn wildcard_match(pattern: &str, text: &str) -> bool {
+        let pattern_lower = pattern.to_lowercase();
+        
+        if pattern_lower == "*" || pattern_lower == "any" {
+            return true;
+        }
+        
+        // Handle *.example.com pattern
+        if pattern_lower.starts_with("*.") {
+            let suffix = &pattern_lower[1..];
+            return text.ends_with(suffix) || text == &pattern_lower[2..];
+        }
+        
+        // Handle *keyword* pattern
+        if pattern_lower.starts_with('*') && pattern_lower.ends_with('*') && pattern_lower.len() > 2 {
+            let keyword = &pattern_lower[1..pattern_lower.len()-1];
+            return text.contains(keyword);
+        }
+        
+        // Handle keyword* pattern
+        if pattern_lower.ends_with('*') {
+            let prefix = &pattern_lower[..pattern_lower.len()-1];
+            return text.starts_with(prefix);
+        }
+        
+        // Handle *keyword pattern
+        if pattern_lower.starts_with('*') {
+            let suffix = &pattern_lower[1..];
+            return text.ends_with(suffix);
+        }
+        
+        // Exact match
+        text == pattern_lower
+    }
+
+    pub fn load_references(&self, path: &str) -> std::io::Result<usize> {
+        let content = std::fs::read_to_string(path)?;
+        let mut count = 0;
+        let mut map = self.reference_map.write().unwrap();
+        
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 2 {
+                if let Ok(id) = parts[0].trim().parse::<u32>() {
+                    let name = parts[1].trim().to_string();
+                    map.insert(id, name);
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    pub fn load_emails(&self, path: &str) -> std::io::Result<usize> {
+        let content = std::fs::read_to_string(path)?;
+        let mut count = 0;
+        let mut emails = self.email_blocklist.write().unwrap();
+        
+        for line in content.lines() {
+            let email = line.trim().to_lowercase();
+            if !email.is_empty() && !email.starts_with('#') {
+                emails.insert(email);
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+    
+    pub fn load_urlhaus(&self, path: &str) -> std::io::Result<usize> {
+        // Simple line-based loader for now, assuming URL per line or CSV
+        // If CSV, we might need robust parsing. 
+        // Based on user "urlhaus.txt", let's assume one URL per line or CSV.
+        // If it's the standard export: id,dateadded,url,url_status,threat,tags,urlhaus_link,reporter
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+        
+        // Basic check if it looks like CSV
+        // We'll iterate lines manually to avoid strict CSV errors
+        use std::io::BufRead;
+        let mut urls = self.urlhaus_urls.write().unwrap();
+
+        for line in reader.lines() {
+            if let Ok(l) = line {
+                if l.starts_with('#') { continue; }
+                
+                // Try to extract URL column (index 2 usually)
+                let parts: Vec<&str> = l.split(',').collect();
+                if parts.len() > 3 {
+                   let url = parts[2].trim().replace("\"", ""); // Simple unquote
+                   if !url.is_empty() {
+                       urls.insert(url.to_lowercase());
+                       // Parse domain from URL for domain blocking?
+                       // Left as future optimization to avoid over-blocking
+                   }
+                } else if !l.is_empty() {
+                    // Fallback: Treat whole line as URL
+                     urls.insert(l.trim().to_lowercase());
+                }
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    pub fn load_from_website_folder(&self, base_path: &str) -> std::io::Result<usize> {
+        let mut count = 0;
+        
+        // 1. Load References
+        let ref_path = format!("{}\\references.txt", base_path);
+        if Path::new(&ref_path).exists() {
+             if let Ok(c) = self.load_references(&ref_path) {
+                 println!("Loaded {} references.", c);
+             }
+        }
+
+        // 2. Load Email Blacklist
+        let email_path = format!("{}\\listed_email_365.txt", base_path);
+         if Path::new(&email_path).exists() {
+             if let Ok(c) = self.load_emails(&email_path) {
+                 println!("Loaded {} malicious emails.", c);
+             }
+        }
+
+        // 3. Load URLHaus
+        let urlhaus_path = format!("{}\\urlhaus.txt", base_path);
+         if Path::new(&urlhaus_path).exists() {
+             if let Ok(c) = self.load_urlhaus(&urlhaus_path) {
+                 println!("Loaded {} URLHaus entries.", c);
+             }
+        }
+
+        // 4. Load Optimized CSVs
+        let pattern = format!("{}\\*.optimized.csv", base_path);
         for entry in glob(&pattern).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))? {
             match entry {
                 Ok(path) => {
@@ -63,60 +266,68 @@ impl WebFilter {
 
     fn load_csv(&self, path: &Path) -> std::io::Result<usize> {
         let file = File::open(path)?;
+        // CRITICAL UPDATE: The optimized CSVs (like WhiteListDomains.optimized.csv) 
+        // observed in `everything/website` DO NOT have headers (line 1 is data: "zzzzzzzzz.info,1").
+        // We must set has_headers(false) to read the first line as data.
         let mut rdr = csv::ReaderBuilder::new()
-            .has_headers(true)
+            .has_headers(false) // Optimized CSVs are headerless
             .from_reader(BufReader::new(file));
 
         let mut count = 0;
         let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
         
-        // Determine type based on filename (heuristic)
         let is_ipv4 = filename.contains("IPv4");
         let is_ipv6 = filename.contains("IPv6");
-        let is_domain = filename.contains("Domain") || filename.contains("SubDomain"); // Covers MaliciousDomains, etc.
-        let is_whitelist = filename.contains("WhiteList");
+        let is_domain = filename.contains("Domain") || filename.contains("SubDomain"); 
+        let is_whitelist = filename.contains("WhiteList"); 
 
-        if is_whitelist {
-             return Ok(0); // Setup lists later if needed, for now just block blocklists
+        // Temporary vectors to hold data before locking
+        let mut ips_v4 = Vec::new();
+        let mut ips_v6 = Vec::new();
+        let mut domains = Vec::new();
+
+        for result in rdr.records() {
+            let record = match result {
+               Ok(r) => r,
+               Err(_) => continue,
+            };
+             
+             // In headerless "optimized" CSVs:
+             // Column 0 = Address/Domain
+             // Column 1 = Reference ID
+             if let Some(addr_str) = record.get(0) {
+                 let addr_str = addr_str.trim();
+                 if addr_str.is_empty() { continue; }
+                 
+                 if is_ipv4 {
+                    if let Ok(ip) = addr_str.parse::<Ipv4Addr>() { ips_v4.push(ip); }
+                 } else if is_ipv6 {
+                    if let Ok(ip) = addr_str.parse::<Ipv6Addr>() { ips_v6.push(ip); }
+                 } else {
+                     // Assume domain if not explicitly IP file, or auto-detect?
+                     // Relying on filename heuristic for now as it's cleaner.
+                     if is_domain {
+                        domains.push(addr_str.to_lowercase());
+                     } else {
+                        // Fallback auto-detect
+                        if let Ok(ip) = addr_str.parse::<Ipv4Addr>() { ips_v4.push(ip); }
+                        else if let Ok(ip) = addr_str.parse::<Ipv6Addr>() { ips_v6.push(ip); }
+                        else { domains.push(addr_str.to_lowercase()); }
+                     }
+                 }
+                 count += 1;
+             }
         }
 
-        let mut ipv4_lock = self.ipv4_blocklist.write().unwrap();
-        let mut ipv6_lock = self.ipv6_blocklist.write().unwrap();
-        let mut domain_lock = self.domain_blocklist.write().unwrap();
-
-        for result in rdr.deserialize() {
-            let record: CsvRecord = match result {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            let addr_str = record.address.trim();
-            if addr_str.is_empty() { continue; }
-
-            if is_ipv4 {
-                if let Ok(ip) = addr_str.parse::<Ipv4Addr>() {
-                    ipv4_lock.insert(ip);
-                    count += 1;
-                }
-            } else if is_ipv6 {
-                 if let Ok(ip) = addr_str.parse::<Ipv6Addr>() {
-                    ipv6_lock.insert(ip);
-                    count += 1;
-                }
-            } else if is_domain {
-                domain_lock.insert(addr_str.to_lowercase());
-                count += 1;
-            } else {
-                // Try auto-detect
-                if let Ok(ip) = addr_str.parse::<Ipv4Addr>() {
-                    ipv4_lock.insert(ip);
-                } else if let Ok(ip) = addr_str.parse::<Ipv6Addr>() {
-                    ipv6_lock.insert(ip);
-                } else {
-                    domain_lock.insert(addr_str.to_lowercase());
-                }
-                count += 1;
-            }
+        // Insert into appropriate sets
+        if is_whitelist {
+             if !ips_v4.is_empty() { self.whitelist_ipv4.write().unwrap().extend(ips_v4); }
+             if !ips_v6.is_empty() { self.whitelist_ipv6.write().unwrap().extend(ips_v6); }
+             if !domains.is_empty() { self.whitelist_domains.write().unwrap().extend(domains); }
+        } else {
+             if !ips_v4.is_empty() { self.ipv4_blocklist.write().unwrap().extend(ips_v4); }
+             if !ips_v6.is_empty() { self.ipv6_blocklist.write().unwrap().extend(ips_v6); }
+             if !domains.is_empty() { self.domain_blocklist.write().unwrap().extend(domains); }
         }
         
         Ok(count)
@@ -124,8 +335,14 @@ impl WebFilter {
 
     pub fn is_blocked_ip(&self, ip: IpAddr) -> bool {
         match ip {
-            IpAddr::V4(ipv4) => self.ipv4_blocklist.read().unwrap().contains(&ipv4),
-            IpAddr::V6(ipv6) => self.ipv6_blocklist.read().unwrap().contains(&ipv6),
+            IpAddr::V4(ipv4) => {
+                if self.whitelist_ipv4.read().unwrap().contains(&ipv4) { return false; }
+                self.ipv4_blocklist.read().unwrap().contains(&ipv4)
+            },
+            IpAddr::V6(ipv6) => {
+                 if self.whitelist_ipv6.read().unwrap().contains(&ipv6) { return false; }
+                 self.ipv6_blocklist.read().unwrap().contains(&ipv6)
+            },
         }
     }
 
@@ -156,6 +373,27 @@ impl WebFilter {
         if TELEGRAM_TOKEN_REGEX.is_match(&text) {
             return Some(format!("Regex Match: Telegram Token"));
         }
+        
+        // --- Email Scanning ---
+        for cap in EMAIL_REGEX.captures_iter(&text) {
+            if let Some(email_match) = cap.get(0) {
+                let email = email_match.as_str().to_lowercase();
+                if self.email_blocklist.read().unwrap().contains(&email) {
+                    return Some(format!("Blocked Malicious Email: {}", email));
+                }
+            }
+        }
+        
+        // --- URLHaus Check in Payload (e.g. GET requests) ---
+        // Basic heuristic: check if any part of the text matches a known bad URL
+        // (Optimized: Checking substring for every URL is slow, so we check ONLY if "http" is present)
+        if text_lower.contains("http") {
+             for url in self.urlhaus_urls.read().unwrap().iter() {
+                 if text_lower.contains(url) {
+                      return Some(format!("Blocked URLHaus: {}", url));
+                 }
+             }
+        }
 
         // 2. Check for Host header (HTTP)
         // Find "Host: "
@@ -180,5 +418,49 @@ impl WebFilter {
         }
         
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_real_file_loading_and_priority() {
+        let filter = WebFilter::new();
+        
+        let base_path = PathBuf::from("website"); 
+        let whitelist_path = base_path.join("WhiteListDomains.optimized.csv");
+        let malware_path = base_path.join("MalwareDomains.optimized.csv");
+
+        if !whitelist_path.exists() || !malware_path.exists() {
+            eprintln!("Skipping real data test: files not found at {:?}", base_path);
+            return;
+        }
+
+        println!("Loading Whitelist: {:?}", whitelist_path);
+        let _ = filter.load_csv(&whitelist_path).expect("Failed to load whitelist");
+        
+        println!("Loading Malware: {:?}", malware_path);
+        let _ = filter.load_csv(&malware_path).expect("Failed to load malware list");
+
+        // 1. Test Blocklist
+        let blocked = filter.check_hostname("zzzzzzzz.su");
+        assert!(blocked.is_some(), "Expected 'zzzzzzzz.su' to be BLOCKED");
+        println!("Block Check Passed: 'zzzzzzzz.su' is blocked.");
+
+        // 2. Test Whitelist
+        let allowed = filter.check_hostname("zzzzzzzzz.info");
+        assert!(allowed.is_none(), "Expected 'zzzzzzzzz.info' to be ALLOWED (Whitelisted)");
+        println!("Whitelist Check Passed: 'zzzzzzzzz.info' is allowed.");
+
+        // 3. Test Priority
+        filter.domain_blocklist.write().unwrap().insert("test-conflict.com".to_string());
+        filter.whitelist_domains.write().unwrap().insert("test-conflict.com".to_string());
+        
+        let priority_check = filter.check_hostname("test-conflict.com");
+        assert!(priority_check.is_none(), "Expected Whitelist to override Blocklist");
+        println!("Priority Check Passed: Whitelist won.");
     }
 }

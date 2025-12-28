@@ -3,10 +3,10 @@ use std::mem;
 use std::ptr;
 use std::thread;
 use std::time::Duration;
-use windows::Win32::Foundation::{BOOL, HINSTANCE, HANDLE};
+use windows::Win32::Foundation::{HINSTANCE, HANDLE};
 use windows::Win32::Networking::WinSock::{SOCKET, SOCKADDR};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
-use windows::Win32::System::SystemServices::{DLL_PROCESS_ATTACH};
+use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::Storage::FileSystem::{WriteFile, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ};
 use windows::Win32::UI::WindowsAndMessaging::{HHOOK, HOOKPROC, WINDOWS_HOOK_ID};
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, WINEVENTPROC};
@@ -30,7 +30,6 @@ static mut ORIGINAL_SET_WIN_EVENT_HOOK: Option<unsafe extern "system" fn(u32, u3
 unsafe fn send_log(msg: String) {
     let pipe_name = windows::core::s!("\\\\.\\pipe\\HydraDragonFirewall");
     
-    // Explicitly use windows-rs types to avoid inference issues (HANDLE.0 check)
     unsafe {
         let handle_res = windows::Win32::Storage::FileSystem::CreateFileA(
             pipe_name,
@@ -39,12 +38,12 @@ unsafe fn send_log(msg: String) {
             None,
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
-            HANDLE::default()
+            None
         );
         
         if let Ok(handle) = handle_res {
-            // INVALID_HANDLE_VALUE is -1, null handle is 0. Accessing .0 for comparison.
-            if handle.0 != 0 && handle.0 != -1 {
+            // Use is_invalid() instead of .0 field access (windows-rs 0.62+ API change)
+            if !handle.is_invalid() {
                 let msg_c = CString::new(msg).unwrap_or_default();
                 let bytes = msg_c.as_bytes();
                 let mut written = 0;
@@ -120,12 +119,12 @@ fn initialize_hooks() {
 
 #[unsafe(no_mangle)]
 #[allow(non_snake_case, unused_variables)]
-extern "system" fn DllMain(dll_module: HINSTANCE, call_reason: u32, reserved: *mut c_void) -> BOOL {
+extern "system" fn DllMain(dll_module: HINSTANCE, call_reason: u32, reserved: *mut c_void) -> bool {
     if call_reason == DLL_PROCESS_ATTACH {
         thread::spawn(|| {
             thread::sleep(Duration::from_millis(500));
             initialize_hooks();
         });
     }
-    BOOL::from(true)
+    true
 }

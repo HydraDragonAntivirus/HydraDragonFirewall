@@ -7,9 +7,9 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-minhook = "0.4.1"
+minhook = "0.9.0"
 lazy_static = "1.4"
-windows = { version = "0.52", features = [
+windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Networking_WinSock",
     "Win32_System_LibraryLoader",

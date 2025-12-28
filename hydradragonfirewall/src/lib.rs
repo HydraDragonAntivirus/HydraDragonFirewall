@@ -2,6 +2,8 @@ pub mod engine;
 pub mod injector;
 pub mod web_filter;
 pub mod windivert_api;
+pub mod tls_parser;
+pub mod http_parser;
 
 use std::sync::Arc;
 use crate::engine::FirewallEngine;
