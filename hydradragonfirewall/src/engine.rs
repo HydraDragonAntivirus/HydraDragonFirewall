@@ -105,11 +105,15 @@ impl FirewallRule {
             if proto != &packet.protocol { return false; }
         }
 
+        // Direction-aware IP/Port matching
+        let remote_ip = if packet.outbound { packet.dst_ip } else { packet.src_ip };
+        let remote_port = if packet.outbound { packet.dst_port } else { packet.src_port };
+
         if !self.remote_ips.is_empty() {
             let mut matched_ip = false;
-            let dst_ip_str = packet.dst_ip.to_string();
+            let remote_ip_str = remote_ip.to_string();
             for pattern in &self.remote_ips {
-                if pattern == "any" || pattern == "*" || pattern == &dst_ip_str {
+                if pattern == "any" || pattern == "*" || pattern == &remote_ip_str {
                     matched_ip = true;
                     break;
                 }
@@ -118,7 +122,7 @@ impl FirewallRule {
         }
 
         if !self.remote_ports.is_empty() {
-            if !self.remote_ports.contains(&packet.dst_port) {
+            if !self.remote_ports.contains(&remote_port) {
                 return false;
             }
         }
@@ -401,6 +405,7 @@ pub struct AppManager {
     pub known_apps: RwLock<HashSet<String>>,
     pub port_map: RwLock<HashMap<u16, u32>>,
     pub name_cache: AppNameCache,
+    pub url_cache: RwLock<HashMap<u32, String>>, // PID -> URL
 }
 
 impl AppManager {
@@ -411,6 +416,7 @@ impl AppManager {
             known_apps: RwLock::new(HashSet::new()),
             port_map: RwLock::new(HashMap::new()),
             name_cache: AppNameCache::new(),
+            url_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -727,6 +733,60 @@ impl FirewallEngine {
             }
         };
 
+        // PIPE MONITOR FOR HOOK DLL
+        let am_pipe = Arc::clone(&am);
+        std::thread::Builder::new()
+            .name("pipe_monitor".to_string())
+            .spawn(move || {
+                use windows::Win32::System::Pipes::{CreateNamedPipeA, ConnectNamedPipe, PIPE_TYPE_MESSAGE, PIPE_READMODE_MESSAGE, PIPE_WAIT};
+                use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+                let pipe_name = windows::core::s!("\\\\.\\pipe\\HydraDragonFirewall");
+                loop {
+                    unsafe {
+                        let handle: windows::Win32::Foundation::HANDLE = CreateNamedPipeA(
+                            pipe_name,
+                            PIPE_ACCESS_DUPLEX,
+                            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                            1, 1024, 1024, 0, None
+                        ).unwrap_or_default();
+                        
+                        if !handle.is_invalid() {
+                            if ConnectNamedPipe(handle, None).is_ok() {
+                                let mut buffer = [0u8; 1024];
+                                let mut bytes_read = 0;
+                                if windows::Win32::Storage::FileSystem::ReadFile(handle, Some(&mut buffer), Some(&mut bytes_read), None).is_ok() {
+                                    let msg = String::from_utf8_lossy(&buffer[..bytes_read as usize]).to_string();
+                                    
+                                    let mut pid_val = None;
+                                    if let Some(p_idx) = msg.find("PID:") {
+                                        let pid_str: String = msg[p_idx+4..].chars().take_while(|c| c.is_digit(10)).collect();
+                                        pid_val = pid_str.parse::<u32>().ok();
+                                    }
+
+                                    if let Some(pid) = pid_val {
+                                        if msg.contains("URL:") {
+                                            if let Some(url_part) = msg.split("URL:").nth(1) {
+                                                am_pipe.url_cache.write().unwrap().insert(pid, url_part.trim().to_string());
+                                            }
+                                        }
+                                        if msg.contains("PORT:") {
+                                            if let Some(port_part) = msg.split("PORT:").nth(1) {
+                                                let port_str: String = port_part.trim().chars().take_while(|c| c.is_digit(10)).collect();
+                                                if let Ok(port) = port_str.parse::<u16>() {
+                                                    am_pipe.update_port_mapping(port, pid);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                let _ = windows::Win32::Foundation::CloseHandle(handle);
+                            }
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }).expect("failed to spawn pipe_monitor thread");
+
         let ts = Self::now_ts();
         let _ = tx.emit("log", LogEntry { 
             id: format!("{}-divert-active", ts), timestamp: ts, level: LogLevel::Success, 
@@ -794,6 +854,8 @@ impl FirewallEngine {
                                     ).to_vec()
                                 };
 
+                                let pid = 0; // Network layer does not provide PID directly in WinDivert 2.x
+
                                 let decision = Self::process_packet_decision(
                                     &packet.data,
                                     &addr_bytes,
@@ -805,7 +867,8 @@ impl FirewallEngine {
                                     &settings_w,
                                     &dns_w,
                                     &wl_w,
-                                    &tx_log
+                                    &tx_log,
+                                    pid
                                 );
 
                                 if decision.should_forward {
@@ -848,11 +911,18 @@ impl FirewallEngine {
         _dns_handler: &Arc<DnsHandler>,
         whitelist: &Arc<RwLock<Vec<WhitelistEntry>>>,
         tx: &AppHandle,
+        process_id: u32,
     ) -> PacketDecision {
         let mut should_forward = true;
         let mut reason = "Allow".to_string();
 
-        if let Some(info) = Self::parse_packet(data, outbound, 0) {
+        if let Some(mut info) = Self::parse_packet(data, outbound, process_id) {
+            // Enriched URL from Cache (Hook DLL)
+            if info.full_url.is_none() {
+                if let Some(url) = am.url_cache.read().unwrap().get(&process_id) {
+                    info.full_url = Some(url.clone());
+                }
+            }
             // println!("DEBUG: Packet Parsed: {} -> {}", info.src_ip, info.dst_ip);
             // 1. Check Global Whitelist (Dynamic)
             {
@@ -939,9 +1009,6 @@ impl FirewallEngine {
             }
             drop(settings_lock);
 
-            // 3. App Decision Check
-            let (app_decision, app_name) = am.check_app(&info);
-            
             // 3. App Decision Check
             let (app_decision, app_name) = am.check_app(&info);
             

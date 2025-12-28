@@ -4,7 +4,7 @@ use std::ptr;
 use std::thread;
 use std::time::Duration;
 use windows::Win32::Foundation::{HINSTANCE, HANDLE};
-use windows::Win32::Networking::WinSock::{SOCKET, SOCKADDR};
+use windows::Win32::Networking::WinSock::{SOCKET, SOCKADDR, SOCKADDR_IN, AF_INET};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows::Win32::Storage::FileSystem::{WriteFile, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ};
@@ -25,6 +25,8 @@ unsafe extern "C" {
 static mut ORIGINAL_CONNECT: Option<unsafe extern "system" fn(SOCKET, *const SOCKADDR, i32) -> i32> = None;
 static mut ORIGINAL_SET_WINDOWS_HOOK_EX: Option<unsafe extern "system" fn(WINDOWS_HOOK_ID, HOOKPROC, HINSTANCE, u32) -> HHOOK> = None;
 static mut ORIGINAL_SET_WIN_EVENT_HOOK: Option<unsafe extern "system" fn(u32, u32, HINSTANCE, WINEVENTPROC, u32, u32, u32) -> HWINEVENTHOOK> = None;
+static mut ORIGINAL_HTTP_OPEN_REQUEST_W: Option<unsafe extern "system" fn(c_void, *const u16, *const u16, *const u16, *const u16, *const *const u16, u32, usize) -> *mut c_void> = None;
+static mut ORIGINAL_WINHTTP_OPEN_REQUEST: Option<unsafe extern "system" fn(c_void, *const u16, *const u16, *const u16, *const u16, *const *const u16, u32) -> *mut c_void> = None;
 
 // Helper: Send log to firewall pipe
 unsafe fn send_log(msg: String) {
@@ -124,11 +126,12 @@ unsafe fn is_safe_process() -> bool {
 // Detours
 unsafe extern "system" fn connect_detour(s: SOCKET, name: *const SOCKADDR, namelen: i32) -> i32 {
     unsafe {
-        if !is_safe_process() {
-            send_log(format!("🛡️ Connect call detected! Socket: {:?} Len: {}", s, namelen));
-        } else {
-             // Optional: Log trusted calls differently or skip
-             // send_log(format!("✅ Trusted Connect: {:?} Len: {}", s, namelen));
+        if !is_safe_process() && !name.is_null() && namelen as usize >= mem::size_of::<SOCKADDR_IN>() {
+            let addr = name as *const SOCKADDR_IN;
+            if (*addr).sin_family == AF_INET {
+                let port = u16::from_be((*addr).sin_port);
+                send_log(format!("PID: {} PORT: {}", std::process::id(), port));
+            }
         }
         if let Some(original) = ORIGINAL_CONNECT { original(s, name, namelen) } else { -1 }
     }
@@ -149,6 +152,26 @@ unsafe extern "system" fn set_win_event_hook_detour(event_min: u32, event_max: u
             send_log(format!("🛡️ SetWinEventHook detected! PID: {} TID: {}", pid, tid));
         }
         if let Some(original) = ORIGINAL_SET_WIN_EVENT_HOOK { original(event_min, event_max, hmod, proc, pid, tid, flags) } else { HWINEVENTHOOK::default() }
+    }
+}
+
+unsafe extern "system" fn http_open_request_w_detour(h_connect: c_void, verb: *const u16, path: *const u16, version: *const u16, referer: *const u16, types: *const *const u16, flags: u32, context: usize) -> *mut c_void {
+    unsafe {
+        if !is_safe_process() && !path.is_null() {
+            let path_str = String::from_utf16_lossy(std::slice::from_raw_parts(path, (0..).find(|&i| *path.add(i) == 0).unwrap_or(0)));
+            send_log(format!("PID: {} URL: {}", std::process::id(), path_str));
+        }
+        if let Some(original) = ORIGINAL_HTTP_OPEN_REQUEST_W { original(h_connect, verb, path, version, referer, types, flags, context) } else { ptr::null_mut() }
+    }
+}
+
+unsafe extern "system" fn winhttp_open_request_detour(h_connect: c_void, verb: *const u16, path: *const u16, version: *const u16, referer: *const u16, types: *const *const u16, flags: u32) -> *mut c_void {
+    unsafe {
+        if !is_safe_process() && !path.is_null() {
+            let path_str = String::from_utf16_lossy(std::slice::from_raw_parts(path, (0..).find(|&i| *path.add(i) == 0).unwrap_or(0)));
+            send_log(format!("PID: {} URL: {}", std::process::id(), path_str));
+        }
+        if let Some(original) = ORIGINAL_WINHTTP_OPEN_REQUEST { original(h_connect, verb, path, version, referer, types, flags) } else { ptr::null_mut() }
     }
 }
 
@@ -184,6 +207,28 @@ fn initialize_hooks() {
                 if MH_CreateHook(target as _, set_win_event_hook_detour as _, &mut original) == 0 {
                     let opt: Option<unsafe extern "system" fn(u32, u32, HINSTANCE, WINEVENTPROC, u32, u32, u32) -> HWINEVENTHOOK> = mem::transmute(original);
                     ORIGINAL_SET_WIN_EVENT_HOOK = opt;
+                    MH_EnableHook(target as _);
+                }
+            }
+        }
+
+        // 4. Hook WinInet HttpOpenRequestW
+        if let Ok(wininet) = LoadLibraryA(windows::core::s!("wininet.dll")) {
+            if let Some(target) = GetProcAddress(wininet, windows::core::s!("HttpOpenRequestW")) {
+                let mut original: *mut c_void = ptr::null_mut();
+                if MH_CreateHook(target as _, http_open_request_w_detour as _, &mut original) == 0 {
+                    ORIGINAL_HTTP_OPEN_REQUEST_W = mem::transmute(original);
+                    MH_EnableHook(target as _);
+                }
+            }
+        }
+
+        // 5. Hook WinHttp WinHttpOpenRequest
+        if let Ok(winhttp) = LoadLibraryA(windows::core::s!("winhttp.dll")) {
+            if let Some(target) = GetProcAddress(winhttp, windows::core::s!("WinHttpOpenRequest")) {
+                let mut original: *mut c_void = ptr::null_mut();
+                if MH_CreateHook(target as _, winhttp_open_request_detour as _, &mut original) == 0 {
+                    ORIGINAL_WINHTTP_OPEN_REQUEST = mem::transmute(original);
                     MH_EnableHook(target as _);
                 }
             }

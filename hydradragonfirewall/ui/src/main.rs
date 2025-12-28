@@ -133,6 +133,7 @@ pub fn App() -> impl IntoView {
     let (validation_error, set_validation_error) = create_signal(Option::<String>::None);
     let (console_output, set_console_output) = create_signal(Vec::<String>::new());
     let (is_compiling, set_is_compiling) = create_signal(false);
+    let (active_tab, set_active_tab) = create_signal("rule".to_string());
 
     let (pending_app, set_pending_app) = create_signal(Option::<PendingApp>::None);
     let (saved_status, set_saved_status) = create_signal(false);
@@ -862,11 +863,16 @@ pub fn App() -> impl IntoView {
                     </div>
 
                     <div style="background: #2d2d2d; display: flex; border-bottom: 1px solid #111">
-                        <div style="padding: 8px 20px; background: #1e1e1e; border-top: 1px solid #007acc; color: #fff; font-size: 11px; display: flex; align-items: center; gap: 8px">
+                        <div style=move || format!("padding: 8px 20px; font-size: 11px; display: flex; align-items: center; gap: 8px; cursor: pointer; {}", 
+                             if active_tab.get() == "rule" { "background: #1e1e1e; border-top: 1px solid #007acc; color: #fff;" } else { "color: #888;" })
+                             on:click=move |_| set_active_tab.set("rule".to_string())>
                             <span style="color: #ce9178">"RS"</span>
                             "rule_definition.rs"
                         </div>
-                        <div style="padding: 8px 20px; color: #888; font-size: 11px; border-right: 1px solid #252526">
+                        <div style=move || format!("padding: 8px 20px; font-size: 11px; display: flex; align-items: center; gap: 8px; cursor: pointer; {}", 
+                             if active_tab.get() == "engine" { "background: #1e1e1e; border-top: 1px solid #007acc; color: #fff;" } else { "color: #888;" })
+                             on:click=move |_| set_active_tab.set("engine".to_string())>
+                            <span style="color: #ce9178">"RS"</span>
                             "engine_core.rs"
                         </div>
                     </div>
@@ -877,6 +883,19 @@ pub fn App() -> impl IntoView {
                         </div>
 
                         <div style="flex: 1; padding: 15px; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; color: #d4d4d4; overflow-y: auto; line-height: 1.5">
+                            <Show when=move || active_tab.get() == "rule" fallback=move || view! {
+                                <div style="color: #6a9955; font-style: italic">
+                                    "// HydraDragon Engine Core - v2.4.1" <br/>
+                                    "// Internal Packet Processing Pipeline" <br/><br/>
+                                    <span style="color: #c586c0">"pub fn"</span><span style="color: #dcdcaa">" process_packet"</span>"(data: &[u8]) {" <br/>
+                                    <span style="margin-left: 20px">"let decision = rule_engine.evaluate(data);"</span> <br/>
+                                    <span style="margin-left: 20px">"let telemetry = Telemetry::new(decision);"</span> <br/>
+                                    <span style="margin-left: 20px; color: #569cd6">"if"</span>" decision.is_blocked() {" <br/>
+                                    <span style="margin-left: 40px">"UI::emit(\"blocked_connection\", telemetry);"</span> <br/>
+                                    <span style="margin-left: 20px">"}"</span> <br/>
+                                    "}"
+                                </div>
+                            }>
                             <form on:submit=add_rule_action>
                                 <div style="display: flex; flex-direction: column; gap: 4px">
                                     <div><span style="color: #c586c0">"use"</span> " hydradragon_sdk::prelude::*;"</div>
@@ -977,6 +996,7 @@ pub fn App() -> impl IntoView {
                                      </button>
                                 </div>
                             </form>
+                            </Show>
                         </div>
                     </div>
 
