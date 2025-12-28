@@ -1021,17 +1021,28 @@ impl FirewallEngine {
         let mut reason = "Allow".to_string();
 
         if let Some(mut info) = Self::parse_packet(data, outbound, process_id) {
+            if info.process_id == 0 {
+                let lookup_port = if info.outbound {
+                    info.src_port
+                } else {
+                    info.dst_port
+                };
+                if let Some(mapped_pid) = am.get_pid_for_port(lookup_port) {
+                    info.process_id = mapped_pid;
+                }
+            }
+
             // Cache URLs coming from the hook so future packets from the same PID carry context
             if let Some(ref url) = info.full_url {
                 am.url_cache
                     .write()
                     .unwrap()
-                    .insert(process_id, url.clone());
+                    .insert(info.process_id, url.clone());
             }
 
             // Enriched URL from Cache (Hook DLL)
             if info.full_url.is_none() {
-                if let Some(url) = am.url_cache.read().unwrap().get(&process_id) {
+                if let Some(url) = am.url_cache.read().unwrap().get(&info.process_id) {
                     info.full_url = Some(url.clone());
                 }
             }
