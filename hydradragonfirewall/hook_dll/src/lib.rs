@@ -54,24 +54,100 @@ unsafe fn send_log(msg: String) {
     }
 }
 
+use lazy_static::lazy_static;
+
+// CSIDL constants (from Win32 API)
+const CSIDL_DESKTOPDIRECTORY: u32 = 0x0010;
+const CSIDL_APPDATA: u32 = 0x001a;
+const CSIDL_PROGRAM_FILES: u32 = 0x0026;
+const CSIDL_FLAG_CREATE: u32 = 0x8000;
+
+unsafe fn get_folder_path(csidl: u32) -> String {
+    use windows::Win32::UI::Shell::SHGetFolderPathW;
+    use windows::Win32::UI::Shell::CSIDL_FLAG_CREATE;
+    
+    let mut buffer = [0u16; 260]; // MAX_PATH
+    if SHGetFolderPathW(None, (csidl | CSIDL_FLAG_CREATE) as i32, None, 0, &mut buffer).is_ok() {
+        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+        String::from_utf16_lossy(&buffer[..len])
+    } else {
+        String::new()
+    }
+}
+
+lazy_static! {
+    static ref SAFE_PATHS: Vec<String> = {
+        unsafe {
+            let mut paths = Vec::new();
+            
+            let prog_files = get_folder_path(CSIDL_PROGRAM_FILES);
+            if !prog_files.is_empty() {
+                paths.push(format!("{}\\{}", prog_files, "HydraDragonAntivirus"));
+            }
+
+            let desktop = get_folder_path(CSIDL_DESKTOPDIRECTORY);
+            if !desktop.is_empty() {
+                paths.push(format!("{}\\{}", desktop, "Sanctum"));
+            }
+
+            let appdata = get_folder_path(CSIDL_APPDATA);
+            if !appdata.is_empty() {
+                paths.push(format!("{}\\{}", appdata, "Sanctum"));
+            }
+            
+            paths
+        }
+    };
+}
+
+unsafe fn get_current_process_path() -> String {
+    use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
+    let mut buffer = [0u16; 1024];
+    let len = GetModuleFileNameW(None, &mut buffer);
+    if len > 0 {
+        String::from_utf16_lossy(&buffer[..len as usize])
+    } else {
+        String::new()
+    }
+}
+
+unsafe fn is_safe_process() -> bool {
+    let path = get_current_process_path();
+    for safe in SAFE_PATHS.iter() {
+        if path.contains(safe) {
+            return true;
+        }
+    }
+    false
+}
+
 // Detours
 unsafe extern "system" fn connect_detour(s: SOCKET, name: *const SOCKADDR, namelen: i32) -> i32 {
     unsafe {
-        send_log(format!("🛡️ Connect call detected! Socket: {:?} Len: {}", s, namelen));
+        if !is_safe_process() {
+            send_log(format!("🛡️ Connect call detected! Socket: {:?} Len: {}", s, namelen));
+        } else {
+             // Optional: Log trusted calls differently or skip
+             // send_log(format!("✅ Trusted Connect: {:?} Len: {}", s, namelen));
+        }
         if let Some(original) = ORIGINAL_CONNECT { original(s, name, namelen) } else { -1 }
     }
 }
 
 unsafe extern "system" fn set_windows_hook_ex_detour(id: WINDOWS_HOOK_ID, proc: HOOKPROC, hmod: HINSTANCE, tid: u32) -> HHOOK {
     unsafe {
-        send_log(format!("🛡️ SetWindowsHookEx detected! ID: {:?} TID: {}", id, tid));
+        if !is_safe_process() {
+            send_log(format!("🛡️ SetWindowsHookEx detected! ID: {:?} TID: {}", id, tid));
+        }
         if let Some(original) = ORIGINAL_SET_WINDOWS_HOOK_EX { original(id, proc, hmod, tid) } else { HHOOK::default() }
     }
 }
 
 unsafe extern "system" fn set_win_event_hook_detour(event_min: u32, event_max: u32, hmod: HINSTANCE, proc: WINEVENTPROC, pid: u32, tid: u32, flags: u32) -> HWINEVENTHOOK {
     unsafe {
-        send_log(format!("🛡️ SetWinEventHook detected! PID: {} TID: {}", pid, tid));
+        if !is_safe_process() {
+            send_log(format!("🛡️ SetWinEventHook detected! PID: {} TID: {}", pid, tid));
+        }
         if let Some(original) = ORIGINAL_SET_WIN_EVENT_HOOK { original(event_min, event_max, hmod, proc, pid, tid, flags) } else { HWINEVENTHOOK::default() }
     }
 }

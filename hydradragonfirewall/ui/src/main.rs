@@ -1,6 +1,7 @@
 use leptos::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
+use std::time::Duration;
 
 #[wasm_bindgen]
 extern "C" {
@@ -120,6 +121,18 @@ pub fn App() -> impl IntoView {
     let (wl_item, set_wl_item) = create_signal(String::new());
     let (wl_category, set_wl_category) = create_signal("Trusted".to_string());
     let (wl_reason, set_wl_reason) = create_signal(String::new());
+    
+    // Rule Modal State & Validation
+    let (show_rule_modal, set_show_rule_modal) = create_signal(false);
+    let (new_rule_name, set_new_rule_name) = create_signal(String::new());
+    let (new_rule_desc, set_new_rule_desc) = create_signal(String::new());
+    let (new_rule_ips, set_new_rule_ips) = create_signal(String::new());
+    let (new_rule_ports, set_new_rule_ports) = create_signal(String::new());
+    let (new_rule_protocol, set_new_rule_protocol) = create_signal("Any".to_string());
+    let (new_rule_block, set_new_rule_block) = create_signal(true);
+    let (validation_error, set_validation_error) = create_signal(Option::<String>::None);
+    let (console_output, set_console_output) = create_signal(Vec::<String>::new());
+    let (is_compiling, set_is_compiling) = create_signal(false);
 
     let (pending_app, set_pending_app) = create_signal(Option::<PendingApp>::None);
     let (saved_status, set_saved_status) = create_signal(false);
@@ -298,6 +311,101 @@ pub fn App() -> impl IntoView {
             set_pending_app.set(None);
         });
     };
+
+    let add_rule_action = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        
+        // Validation Logic
+        let ips_str = new_rule_ips.get();
+        let ports_str = new_rule_ports.get();
+        
+        // Simple Syntax Checker (Mock SDK behavior)
+        let mut valid_ips = Vec::new();
+        for ip in ips_str.split(',') {
+            let trimmed = ip.trim();
+            if trimmed.is_empty() { continue; }
+            if trimmed == "any" || trimmed == "*" {
+                valid_ips.push(trimmed.to_string());
+                continue;
+            }
+            // Basic IP regex-like check (dots and numbers)
+            if trimmed.chars().filter(|c| *c == '.').count() == 3 {
+                 valid_ips.push(trimmed.to_string());
+            } else {
+                set_validation_error.set(Some(format!("Invalid IP Syntax: '{}'. Expected IPv4 (e.g. 192.168.1.1) or '*'", trimmed)));
+                return;
+            }
+        }
+        
+        let mut valid_ports = Vec::new();
+        for port in ports_str.split(',') {
+            let trimmed = port.trim();
+            if trimmed.is_empty() { continue; }
+            if let Ok(p) = trimmed.parse::<u16>() {
+                valid_ports.push(p);
+            } else {
+                 set_validation_error.set(Some(format!("Invalid Port Syntax: '{}'. Expected number (0-65535)", trimmed)));
+                 return;
+            }
+        }
+
+        let protocol_str = new_rule_protocol.get();
+        let protocol_enum = match protocol_str.as_str() {
+            "TCP" => Some(Protocol::TCP),
+            "UDP" => Some(Protocol::UDP),
+            "ICMP" => Some(Protocol::ICMP),
+            _ => None,
+        };
+
+        set_is_compiling.set(true);
+        set_console_output.set(vec!["> Compiling rule definition...".to_string()]);
+
+        // Clone/Move data for closures
+        let ips_for_closure = valid_ips.clone();
+        let ports_for_closure = valid_ports.clone();
+        let proto_for_closure = protocol_enum.clone();
+
+        // Fake SDK "Build" Delay
+        set_timeout(move || {
+            set_console_output.update(|l| l.push("> Syntax check: OK".to_string()));
+            set_console_output.update(|l| l.push("> verifying IP checksums... OK".to_string()));
+            
+            set_timeout(move || {
+                set_settings.update(|s| {
+                    s.rules.push(FirewallRule {
+                        name: new_rule_name.get(),
+                        description: new_rule_desc.get(),
+                        enabled: true,
+                        block: new_rule_block.get(),
+                        protocol: proto_for_closure,
+                        remote_ips: ips_for_closure,
+                        remote_ports: ports_for_closure,
+                        app_name: None,
+                        hostname_pattern: None,
+                        url_pattern: None,
+                    });
+                });
+                save_settings_action();
+                
+                set_console_output.update(|l| l.push("> Deploying to engine... SUCCESS".to_string()));
+                set_console_output.update(|l| l.push("> Rule active.".to_string()));
+
+                // Close after "success"
+                set_timeout(move || {
+                    set_show_rule_modal.set(false);
+                    // Reset Form
+                    set_new_rule_name.set(String::new());
+                    set_new_rule_desc.set(String::new());
+                    set_new_rule_ips.set(String::new());
+                    set_new_rule_ports.set(String::new());
+                    set_new_rule_protocol.set("Any".to_string());
+                    set_validation_error.set(None);
+                    set_console_output.set(Vec::new());
+                    set_is_compiling.set(false);
+                }, Duration::from_millis(800));
+            }, Duration::from_millis(600));
+        }, Duration::from_millis(500));
+    };
     
     view! {
         <div class="app-container">
@@ -446,7 +554,7 @@ pub fn App() -> impl IntoView {
                                         <h3 style="margin: 0">"🔒 Active Protection Rules"</h3>
                                         <span style="font-size: 12px; color: var(--text-muted)">"manage network filtering policies"</span>
                                     </div>
-                                    <button class="btn-primary" style="padding: 8px 20px; font-size: 13px">
+                                    <button class="btn-primary" style="padding: 8px 20px; font-size: 13px" on:click=move |_| set_show_rule_modal.set(true)>
                                         "+ ADD RULE"
                                     </button>
                                 </div>
@@ -734,6 +842,182 @@ pub fn App() -> impl IntoView {
                             </button>
                         </div>
                     </form>
+                </div>
+            </div>
+            
+            <div class={move || if show_rule_modal.get() { "modal-overlay open" } else { "modal-overlay" }}
+                 style={move || if !show_rule_modal.get() { "pointer-events: none" } else { "pointer-events: auto" }}>
+                <div class="glass-modal" style="width: 850px; max-width: 95vw; background: #1e1e1e; border: 1px solid #333; box-shadow: 0 10px 40px rgba(0,0,0,0.6); padding: 0; overflow: hidden; display: flex; flex-direction: column; border-radius: 8px">
+                    
+                    <div style="background: #252526; padding: 10px 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333">
+                         <div style="display: flex; gap: 10px; align-items: center">
+                            <div style="display: flex; gap: 6px">
+                                <span style="height: 12px; width: 12px; background: #ff5f56; border-radius: 50%"></span>
+                                <span style="height: 12px; width: 12px; background: #ffbd2e; border-radius: 50%"></span>
+                                <span style="height: 12px; width: 12px; background: #27c93f; border-radius: 50%"></span>
+                            </div>
+                            <span style="color: #888; font-family: 'Segoe UI', sans-serif; font-size: 12px; margin-left: 15px; border-left: 1px solid #444; padding-left: 15px">"HydraDragon Advanced SDK v2.4.1"</span>
+                         </div>
+                         <button style="background:none; border:none; color: #888; cursor: pointer; font-size: 18px" on:click=move |_| set_show_rule_modal.set(false)>"✕"</button>
+                    </div>
+
+                    <div style="background: #2d2d2d; display: flex; border-bottom: 1px solid #111">
+                        <div style="padding: 8px 20px; background: #1e1e1e; border-top: 1px solid #007acc; color: #fff; font-size: 11px; display: flex; align-items: center; gap: 8px">
+                            <span style="color: #ce9178">"RS"</span>
+                            "rule_definition.rs"
+                        </div>
+                        <div style="padding: 8px 20px; color: #888; font-size: 11px; border-right: 1px solid #252526">
+                            "engine_core.rs"
+                        </div>
+                    </div>
+
+                    <div style="display: flex; flex: 1; min-height: 450px; background: #1e1e1e">
+                        <div style="width: 45px; background: #1e1e1e; border-right: 1px solid #333; color: #858585; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; padding-top: 15px; text-align: right; padding-right: 12px; display: flex; flex-direction: column; gap: 6px; user-select: none; line-height: 1.5">
+                            {(1..=18).map(|n| view! { <span>{n}</span> }).collect_view()}
+                        </div>
+
+                        <div style="flex: 1; padding: 15px; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; color: #d4d4d4; overflow-y: auto; line-height: 1.5">
+                            <form on:submit=add_rule_action>
+                                <div style="display: flex; flex-direction: column; gap: 4px">
+                                    <div><span style="color: #c586c0">"use"</span> " hydradragon_sdk::prelude::*;"</div>
+                                    <div style="margin-bottom: 15px"></div>
+                                    
+                                    <div style="color: #569cd6">"#[rule_entry]"</div>
+                                    <div style="color: #569cd6">"pub fn"<span style="color: #dcdcaa">" define_rule"</span>"() -> "<span style="color: #4ec9b0">"Rule"</span>" {"</div>
+                                    
+                                    <div style="margin-left: 20px">
+                                        <span style="color: #4ec9b0">"RuleBuilder"</span>"::"<span style="color: #dcdcaa">"new"</span>"()"
+                                    </div>
+                                    
+                                    <div style="margin-left: 40px; display: flex; align-items: center; gap: 8px">
+                                        <span>"."</span><span style="color: #dcdcaa">"name"</span><span>"("</span>
+                                        <input type="text" required placeholder="\"Enter rule name...\"" 
+                                               style="background: rgba(206, 145, 120, 0.05); border: none; border-bottom: 1px solid #444; color: #ce9178; font-family: inherit; width: 280px; outline: none; padding: 2px 4px"
+                                               on:input=move |ev| set_new_rule_name.set(event_target_value(&ev))
+                                               prop:value=new_rule_name
+                                        />
+                                        <span>")"</span>
+                                    </div>
+
+                                    <div style="margin-left: 40px; display: flex; align-items: center; gap: 8px">
+                                        <span>"."</span><span style="color: #dcdcaa">"description"</span><span>"("</span>
+                                        <input type="text" required placeholder="\"Describe this rule...\"" 
+                                               style="background: rgba(206, 145, 120, 0.05); border: none; border-bottom: 1px solid #444; color: #ce9178; font-family: inherit; width: 350px; outline: none; padding: 2px 4px"
+                                               on:input=move |ev| set_new_rule_desc.set(event_target_value(&ev))
+                                               prop:value=new_rule_desc
+                                        />
+                                        <span>")"</span>
+                                    </div>
+
+                                    <div style="margin-left: 40px; display: flex; align-items: center; gap: 8px">
+                                        <span>"."</span><span style="color: #dcdcaa">"protocol"</span><span>"("</span>
+                                        <select style="background: #252526; border: 1px solid #444; color: #4ec9b0; font-family: inherit; border-radius: 2px; padding: 1px 4px; outline: none"
+                                                on:change=move |ev| set_new_rule_protocol.set(event_target_value(&ev))>
+                                            <option value="Any">"Protocol::Any"</option>
+                                            <option value="TCP">"Protocol::TCP"</option>
+                                            <option value="UDP">"Protocol::UDP"</option>
+                                            <option value="ICMP">"Protocol::ICMP"</option>
+                                        </select>
+                                        <span>")"</span>
+                                    </div>
+
+                                    <div style="margin-left: 40px; display: flex; align-items: center; gap: 8px">
+                                        <span>"."</span><span style="color: #dcdcaa">"action"</span><span>"("</span>
+                                        <select style="background: #252526; border: 1px solid #444; color: #b5cea8; font-family: inherit; border-radius: 2px; padding: 1px 4px; outline: none"
+                                                on:change=move |ev| set_new_rule_block.set(event_target_value(&ev) == "Block")>
+                                            <option value="Block">"Action::Block"</option>
+                                            <option value="Allow">"Action::Allow"</option>
+                                        </select>
+                                        <span>")"</span>
+                                    </div>
+
+                                    <div style="margin-left: 40px; display: flex; align-items: center; gap: 8px">
+                                        <span>"."</span><span style="color: #dcdcaa">"target_ips"</span><span>"( "</span><span style="color: #569cd6">"vec!"</span>"["
+                                        <input type="text" placeholder="\"192.168.1.*\", \"*\""
+                                               style="background: rgba(156, 220, 254, 0.05); border: none; border-bottom: 1px solid #444; color: #9cdcfe; font-family: inherit; width: 300px; outline: none; padding: 2px 4px"
+                                               on:input=move |ev| {
+                                                    set_new_rule_ips.set(event_target_value(&ev));
+                                                    set_validation_error.set(None);
+                                               }
+                                               prop:value=new_rule_ips
+                                        />
+                                        "] )"
+                                    </div>
+
+                                    <div style="margin-left: 40px; display: flex; align-items: center; gap: 8px">
+                                        <span>"."</span><span style="color: #dcdcaa">"target_ports"</span><span>"( "</span><span style="color: #569cd6">"vec!"</span>"["
+                                        <input type="text" placeholder="80, 443"
+                                               style="background: rgba(181, 206, 168, 0.05); border: none; border-bottom: 1px solid #444; color: #b5cea8; font-family: inherit; width: 180px; outline: none; padding: 2px 4px"
+                                               on:input=move |ev| {
+                                                   set_new_rule_ports.set(event_target_value(&ev));
+                                                   set_validation_error.set(None);
+                                               }
+                                               prop:value=new_rule_ports
+                                        />
+                                        "] )"
+                                    </div>
+
+                                    <div style="margin-left: 20px">
+                                        <span>"."</span><span style="color: #dcdcaa">"build"</span><span>"()"</span>
+                                    </div>
+                                    <div>"}"</div>
+                                </div>
+                                
+                                <div style="margin-top: 30px; display: flex; gap: 15px">
+                                     <button type="submit" 
+                                             class={move || if is_compiling.get() { "btn-primary disabled" } else { "btn-primary" }}
+                                             disabled={move || is_compiling.get()}
+                                             style="background: #007acc; border: none; color: white; padding: 8px 25px; font-family: inherit; cursor: pointer; border-radius: 2px; font-weight: bold; font-size: 12px; display: flex; align-items: center; gap: 10px; transition: background 0.2s">
+                                         {move || if is_compiling.get() { 
+                                             view! { <span style="display:inline-block" class="spin">"🌀"</span> } 
+                                         } else { 
+                                             view! { <span>"🚀"</span> } 
+                                         }}
+                                         {move || if is_compiling.get() { "COMPILING..." } else { "BUILD & DEPLOY" }}
+                                     </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div style="height: 140px; background: #1e1e1e; border-top: 4px solid #333; display: flex; flex-direction: column">
+                        <div style="background: #252526; padding: 4px 15px; font-size: 10px; color: #aaa; text-transform: uppercase; letter-spacing: 1px; display: flex; gap: 20px; border-bottom: 1px solid #333">
+                            <span style="color: #fff; border-bottom: 1px solid #007acc; padding-bottom: 2px">"Output"</span>
+                            "Debug Console"
+                            "Problems"
+                            "Terminal"
+                        </div>
+                        <div style="flex: 1; padding: 10px; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; overflow-y: auto; background: #0c0c0c">
+                             {move || console_output.get().into_iter().map(|line| {
+                                 let l = line.clone();
+                                 let first = l.get(0..1).unwrap_or("").to_string();
+                                 let rest = l.get(1..).unwrap_or("").to_string();
+                                 view! {
+                                     <div style="color: #d4d4d4; margin-bottom: 3px; display: flex; gap: 8px">
+                                        <span style="color: #4ec9b0; opacity: 0.8">{first}</span>
+                                        <span>{rest}</span>
+                                     </div>
+                                 }
+                             }).collect_view()}
+                             {move || validation_error.get().map(|err| view! {
+                                 <div style="color: #f44747; margin-top: 8px; font-weight: bold; background: rgba(244, 71, 71, 0.1); padding: 5px; border-left: 3px solid #f44747">
+                                    "ERROR [SDK-001]: " {err}
+                                 </div>
+                             })}
+                        </div>
+                    </div>
+
+                    <div style="background: #007acc; color: #fff; padding: 2px 15px; display: flex; justify-content: space-between; align-items: center; font-size: 11px">
+                         <div style="display: flex; gap: 15px; align-items: center">
+                            <span style="display: flex; gap: 4px; align-items: center">"⊗ 0" "△ 0"</span>
+                            "ready"
+                         </div>
+                         <div style="display: flex; gap: 15px; align-items: center">
+                            "Spaces: 4"
+                            "UTF-8"
+                            "Rust"
+                         </div>
+                    </div>
                 </div>
             </div>
 

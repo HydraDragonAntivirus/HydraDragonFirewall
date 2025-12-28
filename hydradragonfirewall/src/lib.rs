@@ -74,6 +74,39 @@ pub fn run() {
     builder
         .setup(|app| {
             println!("DEBUG: Entering setup closure...");
+
+            // --- System Tray Setup ---
+            let quiet_i = tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).unwrap();
+            let show_i = tauri::menu::MenuItem::with_id(app, "show", "Show Firewall", true, None::<&str>).unwrap();
+            let menu = tauri::menu::Menu::with_items(app, &[&show_i, &quiet_i]).unwrap();
+
+            let _tray = tauri::tray::TrayIconBuilder::new()
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "quit" => app.exit(0),
+                        "show" => {
+                            if let Some(win) = app.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                     if let tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } = event {
+                        let app = tray.app_handle();
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                     }
+                })
+                .icon(app.default_window_icon().unwrap().clone())
+                .build(app)?;
+
             let handle = app.handle().clone();
             
             // Re-enabling Engine Initialization
@@ -103,9 +136,15 @@ pub fn run() {
                     println!("DEBUG: FirewallEngine managed and started.");
                 })
                 .expect("Failed to spawn engine_init thread");
-
+ 
             println!("DEBUG: setup closure finished.");
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                window.hide().unwrap();
+                api.prevent_close();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             add_whitelist_entry,

@@ -218,8 +218,9 @@ pub struct FirewallSettings {
 impl Default for FirewallSettings {
     fn default() -> Self {
         let mut ips = HashSet::new();
-        ips.insert("127.0.0.1".to_string());
-        ips.insert("::1".to_string());
+        // Localhost disabled by default to allow inspection
+        // ips.insert("127.0.0.1".to_string());
+        // ips.insert("::1".to_string());
 
         let mut ports = HashSet::new();
         ports.insert(8080); // Default development port
@@ -263,7 +264,8 @@ pub struct Statistics {
     pub dns_queries: AtomicU64,
     pub dns_blocked: AtomicU64,
     pub tcp_connections: AtomicU64,
-    pub last_log_time: AtomicU64, // Rate limiting
+    pub last_log_time: AtomicU64, // Rate limiting for blocked
+    pub last_allowed_log_time: AtomicU64, // Rate limiting for allowed
 }
 
 impl Default for Statistics {
@@ -277,6 +279,7 @@ impl Default for Statistics {
             dns_blocked: AtomicU64::new(0),
             tcp_connections: AtomicU64::new(0),
             last_log_time: AtomicU64::new(0),
+            last_allowed_log_time: AtomicU64::new(0),
         }
     }
 }
@@ -730,6 +733,33 @@ impl FirewallEngine {
             message: "🛡️ Firewall Engine ACTIVE (RADICAL Parallel Mode Enabled)".into() 
         });
 
+        // PENDING APP MONITOR THREAD
+        // Checks for new unknown apps and asks the UI
+        let am_monitor = Arc::clone(&am);
+        let tx_monitor = app_handle.clone();
+        
+        std::thread::Builder::new()
+            .name("pending_monitor".to_string())
+            .spawn(move || {
+                loop {
+                    let mut app_opt = None;
+                    {
+                        // Pop one pending app at a time
+                        if let Ok(mut pending) = am_monitor.pending.write() {
+                            app_opt = pending.pop_front();
+                        }
+                    }
+
+                    if let Some(app) = app_opt {
+                        let _ = tx_monitor.emit("ask_app_decision", app);
+                        // Don't spam the UI, wait for user validation interaction
+                        std::thread::sleep(Duration::from_millis(500)); 
+                    } else {
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            }).expect("failed to spawn pending_monitor thread");
+
         // Worker Pool - RADICAL REFACTOR: Each worker is a fully independent capture loop
         let num_workers = 8; // Increased workers for parallel processing
         for worker_id in 0..num_workers {
@@ -752,6 +782,7 @@ impl FirewallEngine {
                         // Each thread competition for packets on the shared handle
                         match divert_w.recv(Some(&mut buffer)) {
                             Ok(packet) => {
+                                // println!("DEBUG: Worker Recv Packet len={}", packet.data.len());
                                 let outbound = packet.address.outbound();
                                 
                                 // Serialize Address for Decision Logic 
@@ -822,6 +853,7 @@ impl FirewallEngine {
         let mut reason = "Allow".to_string();
 
         if let Some(info) = Self::parse_packet(data, outbound, 0) {
+            // println!("DEBUG: Packet Parsed: {} -> {}", info.src_ip, info.dst_ip);
             // 1. Check Global Whitelist (Dynamic)
             {
                 let wl = whitelist.read().unwrap();
@@ -850,7 +882,7 @@ impl FirewallEngine {
             // 2. Check Static Whitelist and Keywords from Settings
             let settings_lock = settings.read().unwrap();
             
-            // Static IP/Domain Whitelist
+            // Static IP/Domain/Port Whitelist
             if settings_lock.whitelisted_ips.contains(&info.src_ip.to_string()) || 
                settings_lock.whitelisted_ips.contains(&info.dst_ip.to_string()) {
                 return PacketDecision {
@@ -858,6 +890,15 @@ impl FirewallEngine {
                     address_data: address_data.to_vec(),
                     should_forward: true,
                     _reason: "Static Whitelist IP".to_string(),
+                };
+            }
+            if settings_lock.whitelisted_ports.contains(&info.src_port) || 
+               settings_lock.whitelisted_ports.contains(&info.dst_port) {
+                return PacketDecision {
+                    packet_data: data.to_vec(),
+                    address_data: address_data.to_vec(),
+                    should_forward: true,
+                    _reason: "Static Whitelist Port".to_string(),
                 };
             }
             if let Some(ref host) = info.hostname {
@@ -901,15 +942,24 @@ impl FirewallEngine {
             // 3. App Decision Check
             let (app_decision, app_name) = am.check_app(&info);
             
-            if should_forward && app_decision == AppDecision::Allow {
-                stats.packets_total.fetch_add(1, Ordering::Relaxed);
-                stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
-                return PacketDecision {
-                    packet_data: data.to_vec(),
-                    address_data: address_data.to_vec(),
-                    should_forward: true,
-                    _reason: format!("App Allowed: {}", app_name),
-                };
+            // 3. App Decision Check
+            let (app_decision, app_name) = am.check_app(&info);
+            
+            if should_forward {
+                if app_decision == AppDecision::Allow {
+                    stats.packets_total.fetch_add(1, Ordering::Relaxed);
+                    stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
+                    return PacketDecision {
+                        packet_data: data.to_vec(),
+                        address_data: address_data.to_vec(),
+                        should_forward: true,
+                        _reason: format!("App Allowed: {}", app_name),
+                    };
+                } else if app_decision == AppDecision::Pending {
+                    // CRITICAL FIX: Block traffic while waiting for user decision
+                    should_forward = false;
+                    reason = format!("Pending User Auth: {}", app_name);
+                }
             }
 
             // 4. Web Filter Checks (Hostname/URL lists)
@@ -956,6 +1006,32 @@ impl FirewallEngine {
             stats.packets_total.fetch_add(1, Ordering::Relaxed);
             if should_forward {
                 stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
+
+                // ALLOWED TRAFFIC LOGGING (Rate Limited)
+                let now = Self::now_ts();
+                let last = stats.last_allowed_log_time.load(Ordering::Relaxed);
+                
+                // Debugging: Print rate limit status
+                // println!("DEBUG: checking rate limit. Now: {}, Last: {}, Diff: {}", now, last, now.saturating_sub(last));
+
+                // Log max 2 allowed events per second to prevent flood
+                if now > last + 500 {
+                   if stats.last_allowed_log_time.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                        let host_info = info.hostname.as_ref()
+                            .map(|h| format!(" [{}]", h))
+                            .or_else(|| info.full_url.as_ref().map(|u| format!(" [{}]", u)))
+                            .unwrap_or_default();
+                        
+                        println!("DEBUG: Emitting Log: {}", reason);
+                        
+                        let _ = tx.emit("log", LogEntry {
+                            id: format!("{}-allow", now),
+                            timestamp: now,
+                            level: LogLevel::Success,
+                            message: format!("✅ {}{} | {}->{}:{}", reason, host_info, info.src_ip, info.dst_ip, info.dst_port)
+                        });
+                   }
+                }
             } else {
                 stats.packets_blocked.fetch_add(1, Ordering::Relaxed);
                 
