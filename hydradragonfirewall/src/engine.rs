@@ -24,6 +24,17 @@ pub enum Protocol {
     Raw(u8),
 }
 
+impl Protocol {
+    fn label(&self) -> &'static str {
+        match self {
+            Protocol::TCP => "TCP",
+            Protocol::UDP => "UDP",
+            Protocol::ICMP => "ICMP",
+            Protocol::Raw(_) => "RAW",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PacketInfo {
     pub timestamp: u64,
@@ -1223,17 +1234,7 @@ impl FirewallEngine {
                         .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
                         .is_ok()
                     {
-                        let host_info = info
-                            .hostname
-                            .as_ref()
-                            .map(|h| format!(" [{}]", h))
-                            .or_else(|| info.full_url.as_ref().map(|u| format!(" [{}]", u)))
-                            .unwrap_or_default();
-                        let entropy_info = info
-                            .payload_entropy
-                            .map(|e| format!(" | H={:.2}", e))
-                            .unwrap_or_default();
-
+                        let context = Self::format_packet_context(&info);
                         println!("DEBUG: Emitting Log: {}", reason);
 
                         let _ = tx.emit(
@@ -1242,15 +1243,7 @@ impl FirewallEngine {
                                 id: format!("{}-allow", now),
                                 timestamp: now,
                                 level: LogLevel::Success,
-                                message: format!(
-                                    "✅ {}{}{} | {}->{}:{}",
-                                    reason,
-                                    host_info,
-                                    entropy_info,
-                                    info.src_ip,
-                                    info.dst_ip,
-                                    info.dst_port
-                                ),
+                                message: format!("✅ {} | {}", reason, context),
                             },
                         );
                     }
@@ -1268,34 +1261,44 @@ impl FirewallEngine {
                         .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
                         .is_ok()
                     {
-                        let host_info = info
-                            .hostname
-                            .as_ref()
-                            .map(|h| format!(" [{}]", h))
-                            .or_else(|| info.full_url.as_ref().map(|u| format!(" [{}]", u)))
-                            .unwrap_or_default();
-                        let entropy_info = info
-                            .payload_entropy
-                            .map(|e| format!(" | H={:.2}", e))
-                            .unwrap_or_default();
+                        let context = Self::format_packet_context(&info);
                         let _ = tx.emit(
                             "log",
                             LogEntry {
                                 id: format!("{}-blocked", now),
                                 timestamp: now,
                                 level: LogLevel::Warning,
-                                message: format!(
-                                    "🚫 {}{}{}  | {}->{}:{}",
-                                    reason,
-                                    host_info,
-                                    entropy_info,
-                                    info.src_ip,
-                                    info.dst_ip,
-                                    info.dst_port
-                                ),
+                                message: format!("🚫 {} | {}", reason, context),
                             },
                         );
                     }
+                }
+            }
+        }
+        // If parsing failed entirely, treat the packet as blocked to preserve the
+        // default-deny posture and still surface the drop with minimal context.
+        else {
+            stats.packets_total.fetch_add(1, Ordering::Relaxed);
+            stats.packets_blocked.fetch_add(1, Ordering::Relaxed);
+            reason = "Blocked (unsupported or truncated packet)".to_string();
+
+            let now = Self::now_ts();
+            let last = stats.last_log_time.load(Ordering::Relaxed);
+            if now > last + 50 {
+                if stats
+                    .last_log_time
+                    .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    let _ = tx.emit(
+                        "log",
+                        LogEntry {
+                            id: format!("{}-blocked", now),
+                            timestamp: now,
+                            level: LogLevel::Warning,
+                            message: format!("🚫 {} | raw-bytes={}B", reason, data.len()),
+                        },
+                    );
                 }
             }
         }
@@ -1436,6 +1439,43 @@ impl FirewallEngine {
             payload_entropy,
             payload_sample,
         })
+    }
+
+    fn format_packet_context(info: &PacketInfo) -> String {
+        let mut parts = vec![format!(
+            "{}:{} -> {}:{}",
+            info.src_ip, info.src_port, info.dst_ip, info.dst_port
+        )];
+
+        parts.push(format!(
+            "proto={}{}",
+            info.protocol.label(),
+            if info.outbound {
+                " outbound"
+            } else {
+                " inbound"
+            }
+        ));
+        parts.push(format!("pid={}", info.process_id));
+        parts.push(format!("bytes={}", info.size));
+
+        if let Some(ref host) = info.hostname {
+            parts.push(format!("host={}", host));
+        }
+        if let Some(ref url) = info.full_url {
+            parts.push(format!("url={}", url));
+        }
+        if let Some(ref dns) = info.dns_query {
+            parts.push(format!("dns={}", dns));
+        }
+        if let Some(entropy) = info.payload_entropy {
+            parts.push(format!("H={:.2}", entropy));
+        }
+        if let Some(ref sample) = info.payload_sample {
+            parts.push(format!("hex={}", sample));
+        }
+
+        parts.join(" | ")
     }
 
     fn shannon_entropy(bytes: &[u8]) -> f64 {
