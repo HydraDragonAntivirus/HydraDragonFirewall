@@ -1,0 +1,13 @@
+{
+    "identifier": "default",
+    "description": "Default capabilities for the app",
+    "local": true,
+    "windows": [
+        "main"
+    ],
+    "permissions": [
+        "core:default",
+        "event:default",
+        "event:allow-listen:log"
+    ]
+}

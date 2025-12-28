@@ -159,53 +159,61 @@ pub fn App() -> impl IntoView {
     // Setup Event Listener
     create_effect(move |_| {
         let closure = Closure::wrap(Box::new(move |event: JsValue| {
-             if let Ok(payload) = serde_wasm_bindgen::from_value::<serde_json::Value>(event) {
-                 if let Some(payload_obj) = payload.get("payload") {
-                     if let Ok(entry) = serde_json::from_value::<LogEntry>(payload_obj.clone()) {
-                        set_logs.update(|l: &mut Vec<LogEntry>| {
-                            l.push(entry.clone());
-                            if l.len() > 200 { l.remove(0); }
-                        });
-                        
-                        set_total_count.update(|n| *n += 1);
-                        
-                        // Update engine status based on log messages
-                        if entry.message.contains("Starting") || entry.message.contains("Loading") {
-                            set_engine_status.set(entry.message.clone());
-                        }
-                        if entry.message.contains("ACTIVE") || entry.message.contains("Engine") {
-                            set_engine_status.set(entry.message.clone());
-                            if entry.message.contains("ACTIVE") {
-                                set_engine_active.set(true);
-                            }
-                        }
-                        if entry.message.contains("WebFilter Loaded") {
-                            set_engine_status.set("🟢 Monitoring Active".to_string());
-                            set_engine_active.set(true);
-                        }
-                        if entry.message.contains("WinDivert") && !entry.message.contains("Failed") {
-                            set_engine_active.set(true);
-                        }
-                        if entry.message.contains("Failed") || entry.message.contains("Error") {
-                            set_engine_status.set(format!("⚠️ {}", entry.message));
-                        }
-                        
-                        match entry.level {
-                            LogLevel::Warning | LogLevel::Error => {
-                                if entry.message.contains("Blocking") || entry.message.contains("BLOCKED") {
-                                    set_blocked_count.update(|n| *n += 1);
+             match serde_wasm_bindgen::from_value::<serde_json::Value>(event.clone()) {
+                Ok(payload) => {
+                     if let Some(payload_obj) = payload.get("payload") {
+                         match serde_json::from_value::<LogEntry>(payload_obj.clone()) {
+                            Ok(entry) => {
+                                set_logs.update(|l: &mut Vec<LogEntry>| {
+                                    l.push(entry.clone());
+                                    if l.len() > 200 { l.remove(0); }
+                                });
+                                
+                                set_total_count.update(|n| *n += 1);
+                                
+                                // Update engine status based on log messages
+                                if entry.message.contains("Starting") || entry.message.contains("Loading") {
+                                    set_engine_status.set(entry.message.clone());
                                 }
-                                if entry.message.contains("Malicious") || entry.message.contains("Threat") {
-                                    set_threats_count.update(|n| *n += 1);
+                                if entry.message.contains("ACTIVE") || entry.message.contains("Engine") {
+                                    set_engine_status.set(entry.message.clone());
+                                    if entry.message.contains("ACTIVE") {
+                                        set_engine_active.set(true);
+                                    }
+                                }
+                                if entry.message.contains("WebFilter Loaded") {
+                                    set_engine_status.set("🟢 Monitoring Active".to_string());
+                                    set_engine_active.set(true);
+                                }
+                                if entry.message.contains("WinDivert") && !entry.message.contains("Failed") {
+                                    set_engine_active.set(true);
+                                }
+                                if entry.message.contains("Failed") || entry.message.contains("Error") {
+                                    set_engine_status.set(format!("⚠️ {}", entry.message));
+                                }
+                                
+                                match entry.level {
+                                    LogLevel::Warning | LogLevel::Error => {
+                                        if entry.message.contains("Blocking") || entry.message.contains("BLOCKED") {
+                                            set_blocked_count.update(|n| *n += 1);
+                                        }
+                                        if entry.message.contains("Malicious") || entry.message.contains("Threat") {
+                                            set_threats_count.update(|n| *n += 1);
+                                        }
+                                    },
+                                    LogLevel::Success => {
+                                        set_allowed_count.update(|n| *n += 1);
+                                    }
+                                    _ => {},
                                 }
                             },
-                            LogLevel::Success => {
-                                set_allowed_count.update(|n| *n += 1);
+                            Err(_) => {
                             }
-                            _ => {},
-                        }
+                         }
                      }
-                 }
+                },
+                Err(_) => {
+                }
              }
         }) as Box<dyn FnMut(JsValue)>);
         
