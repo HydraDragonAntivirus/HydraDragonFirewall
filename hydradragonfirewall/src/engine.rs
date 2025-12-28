@@ -41,6 +41,10 @@ pub struct PacketInfo {
     pub hostname: Option<String>,
     /// Full URL (HTTP only, HTTPS only has hostname)
     pub full_url: Option<String>,
+    /// Shannon entropy of the packet payload for entropy-based anomaly checks
+    pub payload_entropy: Option<f64>,
+    /// Hex preview of the first bytes of the payload for forensic visibility
+    pub payload_sample: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -238,18 +242,10 @@ pub struct FirewallSettings {
 impl Default for FirewallSettings {
     fn default() -> Self {
         let ips = HashSet::new();
-        // Localhost disabled by default to allow inspection
-        // ips.insert("127.0.0.1".to_string());
-        // ips.insert("::1".to_string());
 
-        let mut ports = HashSet::new();
-        ports.insert(8080); // Default development port
+        let ports = HashSet::new();
 
-        let mut apps = HashMap::new();
-        // Default allow rules moved here from hardcoded values
-        apps.insert("system".to_string(), AppDecision::Allow);
-        apps.insert("hydradragonfirewall.exe".to_string(), AppDecision::Allow);
-        apps.insert("svchost.exe".to_string(), AppDecision::Allow);
+        let apps = HashMap::new();
 
         let mut keywords = HashSet::new();
         // Default bad keywords
@@ -584,15 +580,6 @@ impl FirewallEngine {
 
         // Default allow rules are now handled in Default impl or loaded from disk.
         // We do NOT hardcode them here to allow user to override/remove them.
-        if settings_data.app_decisions.is_empty() {
-            settings_data
-                .app_decisions
-                .insert("system".to_string(), AppDecision::Allow);
-            settings_data
-                .app_decisions
-                .insert("hydradragonfirewall.exe".to_string(), AppDecision::Allow);
-        }
-
         if settings_data.rules.is_empty() {
             settings_data.rules.push(FirewallRule {
                 name: "Block ICMP (Ping)".to_string(),
@@ -1018,10 +1005,16 @@ impl FirewallEngine {
         tx: &AppHandle,
         process_id: u32,
     ) -> PacketDecision {
-        let mut should_forward = true;
+        let mut should_forward = false;
         let mut reason = "Allow".to_string();
 
         if let Some(mut info) = Self::parse_packet(data, outbound, process_id) {
+            let is_loopback_traffic = info.src_ip.is_loopback() || info.dst_ip.is_loopback();
+            should_forward = is_loopback_traffic;
+            if !is_loopback_traffic {
+                reason = "Default block: non-localhost".to_string();
+            }
+
             if info.process_id == 0 {
                 let lookup_port = if info.outbound {
                     info.src_port
@@ -1059,21 +1052,15 @@ impl FirewallEngine {
                     if entry.item == info.src_ip.to_string()
                         || entry.item == info.dst_ip.to_string()
                     {
-                        return PacketDecision {
-                            packet_data: data.to_vec(),
-                            address_data: address_data.to_vec(),
-                            should_forward: true,
-                            _reason: format!("Whitelisted: {}", entry.item),
-                        };
+                        should_forward = true;
+                        reason = format!("Whitelisted: {}", entry.item);
+                        break;
                     }
                     if let Some(ref host) = info.hostname {
                         if host == &entry.item {
-                            return PacketDecision {
-                                packet_data: data.to_vec(),
-                                address_data: address_data.to_vec(),
-                                should_forward: true,
-                                _reason: format!("Whitelisted Host: {}", entry.item),
-                            };
+                            should_forward = true;
+                            reason = format!("Whitelisted Host: {}", entry.item);
+                            break;
                         }
                     }
                 }
@@ -1092,7 +1079,7 @@ impl FirewallEngine {
                 }
             }
 
-            // Static IP/Domain/Port Whitelist
+            // Static IP/Domain/Port Whitelist (user-managed only)
             if settings_lock
                 .whitelisted_ips
                 .contains(&info.src_ip.to_string())
@@ -1100,31 +1087,19 @@ impl FirewallEngine {
                     .whitelisted_ips
                     .contains(&info.dst_ip.to_string())
             {
-                return PacketDecision {
-                    packet_data: data.to_vec(),
-                    address_data: address_data.to_vec(),
-                    should_forward: true,
-                    _reason: "Static Whitelist IP".to_string(),
-                };
+                should_forward = true;
+                reason = "Static Whitelist IP".to_string();
             }
             if settings_lock.whitelisted_ports.contains(&info.src_port)
                 || settings_lock.whitelisted_ports.contains(&info.dst_port)
             {
-                return PacketDecision {
-                    packet_data: data.to_vec(),
-                    address_data: address_data.to_vec(),
-                    should_forward: true,
-                    _reason: "Static Whitelist Port".to_string(),
-                };
+                should_forward = true;
+                reason = "Static Whitelist Port".to_string();
             }
             if let Some(ref host) = info.hostname {
                 if settings_lock.whitelisted_domains.contains(host) {
-                    return PacketDecision {
-                        packet_data: data.to_vec(),
-                        address_data: address_data.to_vec(),
-                        should_forward: true,
-                        _reason: "Static Whitelist Domain".to_string(),
-                    };
+                    should_forward = true;
+                    reason = "Static Whitelist Domain".to_string();
                 }
             }
 
@@ -1158,21 +1133,30 @@ impl FirewallEngine {
             // 3. App Decision Check
             let (app_decision, app_name) = am.check_app(&info);
 
-            if should_forward {
-                if app_decision == AppDecision::Allow {
-                    stats.packets_total.fetch_add(1, Ordering::Relaxed);
-                    stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
-                    return PacketDecision {
-                        packet_data: data.to_vec(),
-                        address_data: address_data.to_vec(),
-                        should_forward: true,
-                        _reason: format!("App Allowed: {}", app_name),
-                    };
-                } else if app_decision == AppDecision::Pending {
+            match app_decision {
+                AppDecision::Allow => {
+                    // If we were only blocking because of the default non-localhost policy,
+                    // a user allow decision should punch a hole for this app.
+                    if !should_forward && reason.starts_with("Default block") {
+                        should_forward = true;
+                        reason = format!("App Allowed: {}", app_name);
+                    } else if should_forward {
+                        stats.packets_total.fetch_add(1, Ordering::Relaxed);
+                        stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
+                        return PacketDecision {
+                            packet_data: data.to_vec(),
+                            address_data: address_data.to_vec(),
+                            should_forward: true,
+                            _reason: format!("App Allowed: {}", app_name),
+                        };
+                    }
+                }
+                AppDecision::Pending => {
                     // CRITICAL FIX: Block traffic while waiting for user decision
                     should_forward = false;
                     reason = format!("Pending User Auth: {}", app_name);
                 }
+                AppDecision::Block => {}
             }
 
             // 4. Web Filter Checks (Hostname/URL lists)
@@ -1200,19 +1184,17 @@ impl FirewallEngine {
             }
 
             // 5. Custom Firewall Rules
-            if should_forward {
-                let current_rules = rules.read().unwrap();
-                for rule in current_rules.iter() {
-                    if rule.matches(&info, &app_name) {
-                        if rule.block {
-                            should_forward = false;
-                            reason = format!("Rule: {}", rule.name);
-                            break;
-                        } else {
-                            reason = format!("Rule Allowed: {}", rule.name);
-                            break;
-                        }
+            let current_rules = rules.read().unwrap();
+            for rule in current_rules.iter() {
+                if rule.matches(&info, &app_name) {
+                    if rule.block {
+                        should_forward = false;
+                        reason = format!("Rule: {}", rule.name);
+                    } else {
+                        should_forward = true;
+                        reason = format!("Rule Allowed: {}", rule.name);
                     }
+                    break;
                 }
             }
 
@@ -1245,6 +1227,10 @@ impl FirewallEngine {
                             .map(|h| format!(" [{}]", h))
                             .or_else(|| info.full_url.as_ref().map(|u| format!(" [{}]", u)))
                             .unwrap_or_default();
+                        let entropy_info = info
+                            .payload_entropy
+                            .map(|e| format!(" | H={:.2}", e))
+                            .unwrap_or_default();
 
                         println!("DEBUG: Emitting Log: {}", reason);
 
@@ -1255,8 +1241,13 @@ impl FirewallEngine {
                                 timestamp: now,
                                 level: LogLevel::Success,
                                 message: format!(
-                                    "✅ {}{} | {}->{}:{}",
-                                    reason, host_info, info.src_ip, info.dst_ip, info.dst_port
+                                    "✅ {}{}{} | {}->{}:{}",
+                                    reason,
+                                    host_info,
+                                    entropy_info,
+                                    info.src_ip,
+                                    info.dst_ip,
+                                    info.dst_port
                                 ),
                             },
                         );
@@ -1281,6 +1272,10 @@ impl FirewallEngine {
                             .map(|h| format!(" [{}]", h))
                             .or_else(|| info.full_url.as_ref().map(|u| format!(" [{}]", u)))
                             .unwrap_or_default();
+                        let entropy_info = info
+                            .payload_entropy
+                            .map(|e| format!(" | H={:.2}", e))
+                            .unwrap_or_default();
                         let _ = tx.emit(
                             "log",
                             LogEntry {
@@ -1288,8 +1283,13 @@ impl FirewallEngine {
                                 timestamp: now,
                                 level: LogLevel::Warning,
                                 message: format!(
-                                    "🚫 {}{}  | {}->{}:{}",
-                                    reason, host_info, info.src_ip, info.dst_ip, info.dst_port
+                                    "🚫 {}{}{}  | {}->{}:{}",
+                                    reason,
+                                    host_info,
+                                    entropy_info,
+                                    info.src_ip,
+                                    info.dst_ip,
+                                    info.dst_port
                                 ),
                             },
                         );
@@ -1352,6 +1352,9 @@ impl FirewallEngine {
         let mut hostname = None;
         let mut full_url = None;
         let mut dns_query = None;
+        let mut payload_entropy = None;
+        let mut payload_sample = None;
+        let mut payload_bytes: Option<&[u8]> = None;
 
         // Extract hostname and URL from TCP payloads
         if matches!(protocol, Protocol::TCP) && header_len + 20 < data.len() {
@@ -1366,6 +1369,7 @@ impl FirewallEngine {
 
             if payload_start < data.len() {
                 let payload = &data[payload_start..];
+                payload_bytes = Some(payload);
 
                 // Check for HTTPS (port 443) - TLS SNI extraction
                 if dst_port == 443 || src_port == 443 {
@@ -1388,10 +1392,30 @@ impl FirewallEngine {
         {
             let dns_payload = &data[header_len + 8..];
             dns_query = Self::parse_dns_query(dns_payload);
+            payload_bytes = Some(dns_payload);
         }
 
         if hostname.is_none() {
             hostname = dns_query.clone();
+        }
+
+        if payload_bytes.is_none() {
+            // For non-TCP/UDP payloads, fall back to bytes after the IP header when possible
+            if header_len < data.len() {
+                payload_bytes = Some(&data[header_len..]);
+            }
+        }
+
+        if let Some(bytes) = payload_bytes {
+            if !bytes.is_empty() {
+                payload_entropy = Some(Self::shannon_entropy(bytes));
+                let preview: Vec<String> = bytes
+                    .iter()
+                    .take(32)
+                    .map(|b| format!("{:02X}", b))
+                    .collect();
+                payload_sample = Some(preview.join(" "));
+            }
         }
 
         Some(PacketInfo {
@@ -1407,7 +1431,26 @@ impl FirewallEngine {
             dns_query,
             hostname,
             full_url,
+            payload_entropy,
+            payload_sample,
         })
+    }
+
+    fn shannon_entropy(bytes: &[u8]) -> f64 {
+        let mut counts = [0usize; 256];
+        for &b in bytes {
+            counts[b as usize] += 1;
+        }
+
+        let len = bytes.len() as f64;
+        counts
+            .iter()
+            .filter(|&&c| c > 0)
+            .map(|&c| {
+                let p = c as f64 / len;
+                -p * p.log2()
+            })
+            .sum()
     }
 
     fn parse_dns_query(payload: &[u8]) -> Option<String> {
