@@ -564,7 +564,9 @@ impl<L: windivert::layer::WinDivertLayerTrait> Clone for WinDivertArc<L> {
 impl<L: windivert::layer::WinDivertLayerTrait> std::ops::Deref for WinDivertArc<L> {
     type Target = WinDivert<L>;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        // Expose the inner WinDivert handle so wrapper instances support all
+        // WinDivert methods (e.g., send/recv) instead of just Arc methods.
+        self.0.as_ref()
     }
 }
 
