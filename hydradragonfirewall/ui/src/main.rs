@@ -123,6 +123,8 @@ pub fn App() -> impl IntoView {
 
     let (pending_app, set_pending_app) = create_signal(Option::<PendingApp>::None);
     let (saved_status, set_saved_status) = create_signal(false);
+    let (engine_status, set_engine_status) = create_signal("Initializing Engine...".to_string());
+    let (engine_active, set_engine_active) = create_signal(false);
 
     // Graph State
     let (graph_data, set_graph_data) = create_signal(vec![180, 160, 170, 150, 140, 130, 110, 120, 100]);
@@ -166,9 +168,31 @@ pub fn App() -> impl IntoView {
                         });
                         
                         set_total_count.update(|n| *n += 1);
+                        
+                        // Update engine status based on log messages
+                        if entry.message.contains("Starting") || entry.message.contains("Loading") {
+                            set_engine_status.set(entry.message.clone());
+                        }
+                        if entry.message.contains("ACTIVE") || entry.message.contains("Engine") {
+                            set_engine_status.set(entry.message.clone());
+                            if entry.message.contains("ACTIVE") {
+                                set_engine_active.set(true);
+                            }
+                        }
+                        if entry.message.contains("WebFilter Loaded") {
+                            set_engine_status.set("🟢 Monitoring Active".to_string());
+                            set_engine_active.set(true);
+                        }
+                        if entry.message.contains("WinDivert") && !entry.message.contains("Failed") {
+                            set_engine_active.set(true);
+                        }
+                        if entry.message.contains("Failed") || entry.message.contains("Error") {
+                            set_engine_status.set(format!("⚠️ {}", entry.message));
+                        }
+                        
                         match entry.level {
                             LogLevel::Warning | LogLevel::Error => {
-                                if entry.message.contains("Blocking") {
+                                if entry.message.contains("Blocking") || entry.message.contains("BLOCKED") {
                                     set_blocked_count.update(|n| *n += 1);
                                 }
                                 if entry.message.contains("Malicious") || entry.message.contains("Threat") {
@@ -309,8 +333,8 @@ pub fn App() -> impl IntoView {
                             AppView::Settings => "System Settings",
                         }}
                     </h2>
-                    <span style="color: var(--accent-green); font-weight: 600; font-size: 14px">
-                        "● SYSTEM SECURE"
+                    <span style={move || if engine_active.get() { "color: var(--accent-green); font-weight: 600; font-size: 14px" } else { "color: var(--accent-yellow); font-weight: 600; font-size: 14px" }}>
+                        {move || if engine_active.get() { "● SYSTEM SECURE" } else { "○ INITIALIZING..." }}
                     </span>
                 </header>
 
@@ -357,7 +381,9 @@ pub fn App() -> impl IntoView {
                                 <div class="glass-card logs-section">
                                     <div class="section-header">
                                         <h3 style="margin: 0; font-size: 16px; font-weight: 700">"Real-time Intelligence"</h3>
-                                        <span style="font-size: 12px; color: var(--text-muted)">"Scanning Network Adapters..."</span>
+                                        <span style={move || if engine_active.get() { "font-size: 12px; color: var(--accent-green)" } else { "font-size: 12px; color: var(--text-muted)" }}>
+                                            {move || engine_status.get()}
+                                        </span>
                                     </div>
                                     <div class="logs-viewport">
                                         <For

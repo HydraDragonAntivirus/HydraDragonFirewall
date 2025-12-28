@@ -7,7 +7,7 @@ pub mod http_parser;
 
 use std::sync::Arc;
 use crate::engine::FirewallEngine;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 #[tauri::command]
 async fn add_whitelist_entry(
@@ -80,6 +80,20 @@ pub fn run() {
             std::thread::Builder::new()
                 .name("engine_init".to_string())
                 .spawn(move || {
+                    // Wait for WebView to be ready
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    
+                    // Emit startup message
+                    let _ = handle.emit("log", crate::engine::LogEntry {
+                        id: "startup-0".to_string(),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                        level: crate::engine::LogLevel::Info,
+                        message: "🚀 Starting Firewall Engine...".to_string(),
+                    });
+                    
                     println!("DEBUG: FirewallEngine::new() starting...");
                     let engine = Arc::new(FirewallEngine::new());
                     println!("DEBUG: FirewallEngine::new() finished.");
