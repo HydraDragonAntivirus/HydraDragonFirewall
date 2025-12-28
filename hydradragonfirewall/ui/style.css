@@ -55,6 +55,9 @@ aside {
     display: flex;
     flex-direction: column;
     padding: 30px 20px;
+    z-index: 1000;
+    /* High priority */
+    position: relative;
 }
 
 .logo-area {
@@ -100,6 +103,9 @@ nav {
     font-weight: 500;
     font-size: 14px;
     transition: var(--transition);
+    cursor: pointer;
+    position: relative;
+    z-index: 1001;
 }
 
 .nav-item:hover,
@@ -116,6 +122,9 @@ main {
     flex-direction: column;
     gap: 30px;
     overflow-y: auto;
+    position: relative;
+    z-index: 1;
+    /* Lower than aside but has context */
 }
 
 /* Glass Cards */
@@ -367,10 +376,14 @@ main {
     z-index: 2000;
     align-items: center;
     justify-content: center;
+    pointer-events: none;
+    /* Defensive: don't block when hidden */
 }
 
 .modal-overlay.open {
     display: flex;
+    pointer-events: auto;
+    /* Active: allow clicks when open */
 }
 
 .glass-modal {
@@ -380,6 +393,8 @@ main {
     border-radius: 20px;
     padding: 40px;
     position: relative;
+    z-index: 2001;
+    /* Above overlay */
 }
 
 .input-group {
@@ -395,7 +410,8 @@ main {
 }
 
 .input-group input,
-.input-group select {
+.input-group select,
+.input-group textarea {
     width: 100%;
     background: #1a1d24;
     border: 1px solid var(--glass-border);
@@ -403,6 +419,8 @@ main {
     border-radius: 10px;
     color: white;
     font-family: inherit;
+    cursor: text;
+    /* Explicit text cursor */
 }
 
 .input-group input:focus {

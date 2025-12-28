@@ -250,12 +250,19 @@ impl WebFilter {
         }
 
         // 4. Load Optimized CSVs
-        let pattern = format!("{}\\*.optimized.csv", base_path);
+        // glob pattern requires forward slashes even on Windows to avoid escaping issues
+        let base_path_slash = base_path.replace("\\", "/");
+        let pattern = format!("{}/{}", base_path_slash, "*.optimized.csv");
+        
         for entry in glob(&pattern).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))? {
             match entry {
                 Ok(path) => {
+                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
                     if let Ok(c) = self.load_csv(&path) {
                         count += c;
+                        println!("Loaded {} entries from {}", c, filename);
+                    } else {
+                         eprintln!("Failed to load CSV: {}", filename);
                     }
                 }
                 Err(e) => eprintln!("Error reading glob entry: {:?}", e),

@@ -10,8 +10,7 @@ use tauri::{AppHandle, Emitter};
 use windivert::prelude::*;
 use crate::web_filter::WebFilter;
 use crate::injector::Injector;
-use windivert::address::WinDivertAddress;
-use windivert::layer::NetworkLayer;
+// Imports updated below
 
 // ============================================================================
 // DATA STRUCTURES
@@ -204,6 +203,7 @@ pub struct WhitelistEntry {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FirewallSettings {
     pub whitelisted_ips: HashSet<String>,
     pub whitelisted_domains: HashSet<String>,
@@ -490,6 +490,7 @@ unsafe extern "system" {
 // ============================================================================
 // PACKET PROCESSING RESULT - Using raw bytes for cross-thread safety
 // ============================================================================
+#[allow(dead_code)]
 struct PacketDecision {
     packet_data: Vec<u8>,
     address_data: Vec<u8>, // Serialized address for cross-thread safety
@@ -506,6 +507,20 @@ pub struct FirewallEngine {
     pub whitelist: Arc<RwLock<Vec<WhitelistEntry>>>,
     pub settings: Arc<RwLock<FirewallSettings>>,
     pub stop_signal: Arc<AtomicBool>,
+}
+
+// RADICAL REFACTOR: Wrapper to make WinDivert Send + Sync (Safe for WinDivert handles)
+struct WinDivertArc<L: windivert::layer::WinDivertLayerTrait>(Arc<WinDivert<L>>);
+unsafe impl<L: windivert::layer::WinDivertLayerTrait> Send for WinDivertArc<L> {}
+unsafe impl<L: windivert::layer::WinDivertLayerTrait> Sync for WinDivertArc<L> {}
+impl<L: windivert::layer::WinDivertLayerTrait> Clone for WinDivertArc<L> {
+    fn clone(&self) -> Self {
+        WinDivertArc(Arc::clone(&self.0))
+    }
+}
+impl<L: windivert::layer::WinDivertLayerTrait> std::ops::Deref for WinDivertArc<L> {
+    type Target = WinDivert<L>;
+    fn deref(&self) -> &Self::Target { &self.0 }
 }
 
 impl FirewallEngine {
@@ -563,6 +578,26 @@ impl FirewallEngine {
             serde_json::from_str(&content).ok()
         } else {
             None
+        }
+    }
+
+    pub fn apply_settings(&self, new_settings: FirewallSettings) {
+        // Sync App Decisions
+        {
+            let mut decisions = self.app_manager.decisions.write().unwrap();
+            *decisions = new_settings.app_decisions.clone();
+        }
+
+        // Sync Rules
+        {
+            let mut rules = self.rules.write().unwrap();
+            *rules = new_settings.rules.clone();
+        }
+
+        // Sync Core Settings
+        {
+            let mut settings = self.settings.write().unwrap();
+            *settings = new_settings;
         }
     }
 
@@ -628,6 +663,7 @@ impl FirewallEngine {
         let stop = Arc::clone(&self.stop_signal);
         let tx = app_handle.clone();
         let settings_arc = Arc::clone(&self.settings);
+        let whitelist_arc = Arc::clone(&self.whitelist);
 
         // Web Filter Loader Thread
         let wf_loader = Arc::clone(&self.web_filter);
@@ -675,15 +711,28 @@ impl FirewallEngine {
                 }
             }).expect("failed to spawn web_filter_loader thread");
 
-        use crossbeam_channel as mpsc;
-        let (packet_tx, packet_rx) = mpsc::bounded::<(Vec<u8>, Vec<u8>, bool)>(2048); // (data, addr_bytes, outbound)
-        let (decision_tx, decision_rx) = mpsc::bounded::<PacketDecision>(2048);
+        // OPEN WINDIVERT HANDLE ONCE
+        let divert = match WinDivert::network("true", 0, WinDivertFlags::new()) {
+            Ok(d) => WinDivertArc(Arc::new(d)),
+            Err(e) => {
+                let ts = Self::now_ts();
+                let _ = tx.emit("log", LogEntry { 
+                    id: format!("{}-divert-fail", ts), timestamp: ts, level: LogLevel::Error, 
+                    message: format!("❌ WinDivert Open Failed: {:?}", e)
+                });
+                return;
+            }
+        };
 
-        // Worker Pool
-        let num_workers = 4;
+        let ts = Self::now_ts();
+        let _ = tx.emit("log", LogEntry { 
+            id: format!("{}-divert-active", ts), timestamp: ts, level: LogLevel::Success, 
+            message: "🛡️ Firewall Engine ACTIVE (RADICAL Parallel Mode Enabled)".into() 
+        });
+
+        // Worker Pool - RADICAL REFACTOR: Each worker is a fully independent capture loop
+        let num_workers = 8; // Increased workers for parallel processing
         for worker_id in 0..num_workers {
-            let rx = packet_rx.clone();
-            let tx_dec = decision_tx.clone();
             let stats_w = Arc::clone(&stats);
             let rules_w = Arc::clone(&rules);
             let am_w = Arc::clone(&am);
@@ -692,15 +741,30 @@ impl FirewallEngine {
             let settings_w = Arc::clone(&settings_arc);
             let dns_w = Arc::clone(&_dns);
             let tx_log = app_handle.clone();
+            let wl_w = Arc::clone(&whitelist_arc);
+            let divert_w = divert.clone();
             
             std::thread::Builder::new()
                 .name(format!("packet_worker_{}", worker_id))
                 .spawn(move || {
+                    let mut buffer = vec![0u8; 65535];
                     while !stop_w.load(Ordering::Relaxed) {
-                        match rx.recv_timeout(Duration::from_millis(100)) {
-                            Ok((data, addr_bytes, outbound)) => {
+                        // Each thread competition for packets on the shared handle
+                        match divert_w.recv(Some(&mut buffer)) {
+                            Ok(packet) => {
+                                let outbound = packet.address.outbound();
+                                
+                                // Serialize Address for Decision Logic 
+                                // (Still keep some structure from previous for compatibility)
+                                let addr_bytes = unsafe {
+                                    std::slice::from_raw_parts(
+                                        &packet.address as *const _ as *const u8,
+                                        std::mem::size_of_val(&packet.address)
+                                    ).to_vec()
+                                };
+
                                 let decision = Self::process_packet_decision(
-                                    &data,
+                                    &packet.data,
                                     &addr_bytes,
                                     outbound,
                                     &stats_w,
@@ -709,97 +773,36 @@ impl FirewallEngine {
                                     &wf_w,
                                     &settings_w,
                                     &dns_w,
+                                    &wl_w,
                                     &tx_log
                                 );
-                                let _ = tx_dec.send(decision);
+
+                                if decision.should_forward {
+                                    // REINJECT IMMEDIATELY from the SAME thread
+                                    let reinject_packet = windivert::packet::WinDivertPacket {
+                                        address: packet.address,
+                                        data: std::borrow::Cow::Borrowed(&decision.packet_data),
+                                    };
+                                    if let Err(_e) = divert_w.send(&reinject_packet) {
+                                         // Log error selectively?
+                                    }
+                                } else {
+                                    // Packet is blocked - we just don't call divert.send()
+                                    // WinDivert drops it automatically since we didn't send it.
+                                }
                             }
-                            Err(_) => continue,
+                            Err(_e) => {
+                                let err_str = _e.to_string();
+                                if err_str.contains("timeout") || err_str.contains("122") {
+                                    std::thread::sleep(Duration::from_millis(1));
+                                } else {
+                                     // Hard error - log once and maybe exit thread?
+                                }
+                            }
                         }
                     }
                 }).expect("failed to spawn packet worker");
         }
-        drop(packet_rx);
-        drop(decision_tx);
-
-        // Capture Thread - Using windivert crate API
-        std::thread::Builder::new()
-            .name("firewall_capture".to_string())
-            .spawn(move || {
-                // Try to open WinDivert handle using the crate
-                // REMOVED .set_sniff() to allow active blocking/reinjection
-                let divert = match WinDivert::network("true", 0, WinDivertFlags::new()) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        let ts = Self::now_ts();
-                        let _ = tx.emit("log", LogEntry { 
-                            id: format!("{}-divert-fail", ts), timestamp: ts, level: LogLevel::Error, 
-                            message: format!("❌ WinDivert Open Failed: {:?}", e)
-                        });
-                        return;
-                    }
-                };
-
-                let ts = Self::now_ts();
-                let _ = tx.emit("log", LogEntry { 
-                    id: format!("{}-divert-active", ts), timestamp: ts, level: LogLevel::Success, 
-                    message: "🛡️ Firewall Engine ACTIVE (Blocking Enabled)".into() 
-                });
-
-                let mut buffer = vec![0u8; 65535];
-
-                while !stop.load(Ordering::Relaxed) {
-                    match divert.recv(Some(&mut buffer)) {
-                        Ok(packet) => {
-                            let outbound = packet.address.outbound();
-                            let data = packet.data.to_vec();
-                            
-                            // Serialize Address for Worker
-                            let addr_bytes = unsafe {
-                                std::slice::from_raw_parts(
-                                    &packet.address as *const _ as *const u8,
-                                    std::mem::size_of_val(&packet.address)
-                                ).to_vec()
-                            };
-                            
-                            let _ = packet_tx.try_send((data, addr_bytes, outbound));
-                            
-                            // Process decisions and reinject
-                            while let Ok(decision) = decision_rx.try_recv() {
-                                if decision.should_forward {
-                                    if !decision.address_data.is_empty() {
-                                        // Deserialize Address
-                                        // We know it's a NetworkLayer address because we opened WinDivert::network
-                                        let addr = unsafe { 
-                                            &*(decision.address_data.as_ptr() as *const WinDivertAddress<NetworkLayer>)
-                                        };
-                                        
-                                        // Reinject
-                                        let packet = windivert::packet::WinDivertPacket {
-                                            address: addr.clone(),
-                                            data: std::borrow::Cow::Borrowed(&decision.packet_data),
-                                        };
-                                        if let Err(_) = divert.send(&packet) {
-                                            // Optional: Log reinjection failure rate-limited?
-                                            // For now just ignore to avoid log spam loop
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            if e.to_string().contains("timeout") || e.to_string().contains("122") {
-                                std::thread::sleep(Duration::from_millis(1));
-                            } else {
-                                let ts = Self::now_ts();
-                                let _ = tx.emit("log", LogEntry { 
-                                    id: format!("{}-recv-err", ts), timestamp: ts, level: LogLevel::Warning, 
-                                    message: format!("Recv error: {:?}", e)
-                                });
-                            }
-                        }
-                    }
-                }
-            }).expect("failed to spawn capture thread");
     }
 
     fn process_packet_decision(
@@ -812,15 +815,93 @@ impl FirewallEngine {
         wf: &Arc<WebFilter>,
         settings: &Arc<RwLock<FirewallSettings>>,
         _dns_handler: &Arc<DnsHandler>,
+        whitelist: &Arc<RwLock<Vec<WhitelistEntry>>>,
         tx: &AppHandle,
     ) -> PacketDecision {
         let mut should_forward = true;
         let mut reason = "Allow".to_string();
 
         if let Some(info) = Self::parse_packet(data, outbound, 0) {
+            // 1. Check Global Whitelist (Dynamic)
+            {
+                let wl = whitelist.read().unwrap();
+                for entry in wl.iter() {
+                    if entry.item == info.src_ip.to_string() || entry.item == info.dst_ip.to_string() {
+                         return PacketDecision {
+                            packet_data: data.to_vec(),
+                            address_data: address_data.to_vec(),
+                            should_forward: true,
+                            _reason: format!("Whitelisted: {}", entry.item),
+                        };
+                    }
+                    if let Some(ref host) = info.hostname {
+                        if host == &entry.item {
+                            return PacketDecision {
+                                packet_data: data.to_vec(),
+                                address_data: address_data.to_vec(),
+                                should_forward: true,
+                                _reason: format!("Whitelisted Host: {}", entry.item),
+                            };
+                        }
+                    }
+                }
+            }
+
+            // 2. Check Static Whitelist and Keywords from Settings
+            let settings_lock = settings.read().unwrap();
+            
+            // Static IP/Domain Whitelist
+            if settings_lock.whitelisted_ips.contains(&info.src_ip.to_string()) || 
+               settings_lock.whitelisted_ips.contains(&info.dst_ip.to_string()) {
+                return PacketDecision {
+                    packet_data: data.to_vec(),
+                    address_data: address_data.to_vec(),
+                    should_forward: true,
+                    _reason: "Static Whitelist IP".to_string(),
+                };
+            }
+            if let Some(ref host) = info.hostname {
+                if settings_lock.whitelisted_domains.contains(host) {
+                    return PacketDecision {
+                        packet_data: data.to_vec(),
+                        address_data: address_data.to_vec(),
+                        should_forward: true,
+                        _reason: "Static Whitelist Domain".to_string(),
+                    };
+                }
+            }
+
+            // Keyword Blocking (Hostname/URL)
+            for keyword in &settings_lock.blocked_keywords {
+                let kw_lower = keyword.to_lowercase();
+                if let Some(ref host) = info.hostname {
+                    if host.to_lowercase().contains(&kw_lower) {
+                        should_forward = false;
+                        reason = format!("Keyword Blocked (Host): {}", keyword);
+                        break;
+                    }
+                }
+                if let Some(ref url) = info.full_url {
+                    if url.to_lowercase().contains(&kw_lower) {
+                        should_forward = false;
+                        reason = format!("Keyword Blocked (URL): {}", keyword);
+                        break;
+                    }
+                }
+            }
+
+            if should_forward {
+                if let Some(mal_reason) = wf.check_payload(data, &*settings_lock) {
+                    should_forward = false;
+                    reason = mal_reason;
+                }
+            }
+            drop(settings_lock);
+
+            // 3. App Decision Check
             let (app_decision, app_name) = am.check_app(&info);
             
-            if app_decision == AppDecision::Allow {
+            if should_forward && app_decision == AppDecision::Allow {
                 stats.packets_total.fetch_add(1, Ordering::Relaxed);
                 stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
                 return PacketDecision {
@@ -831,15 +912,7 @@ impl FirewallEngine {
                 };
             }
 
-            // ... (Rules Logic)
-            let settings_lock = settings.read().unwrap();
-            if let Some(mal_reason) = wf.check_payload(data, &*settings_lock) {
-                should_forward = false;
-                reason = mal_reason;
-            }
-            drop(settings_lock);
-
-            // Check hostname (for HTTPS SNI and HTTP Host)
+            // 4. Web Filter Checks (Hostname/URL lists)
             if should_forward {
                 if let Some(ref hostname) = info.hostname {
                     if let Some(block_reason) = wf.check_hostname(hostname) {
@@ -849,7 +922,6 @@ impl FirewallEngine {
                 }
             }
 
-            // Check full URL (for HTTP)
             if should_forward {
                 if let Some(ref url) = info.full_url {
                     if let Some(block_reason) = wf.check_url(url) {
@@ -859,11 +931,12 @@ impl FirewallEngine {
                 }
             }
 
-           if should_forward && app_decision == AppDecision::Block {
+            if should_forward && app_decision == AppDecision::Block {
                 should_forward = false;
                 reason = format!("Blocked App: {}", app_name);
             }
 
+            // 5. Custom Firewall Rules
             if should_forward {
                 let current_rules = rules.read().unwrap();
                 for rule in current_rules.iter() {
@@ -885,29 +958,23 @@ impl FirewallEngine {
                 stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
             } else {
                 stats.packets_blocked.fetch_add(1, Ordering::Relaxed);
-                // Enhanced logging with hostname/URL info
-                // Enhanced logging with hostname/URL info
                 
-                // RATE LIMITING: Only emit log every 50ms (20 fps) to prevent UI freeze
+                // RATE LIMITING
                 let now = Self::now_ts();
                 let last = stats.last_log_time.load(Ordering::Relaxed);
                 
                 if now > last + 50 {
                    if stats.last_log_time.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
-                        // Relaxed: Log if time threshold is met, don't filter by count stride for blocked packets.
-                        // We still prioritize significant events (hostname/url) but allow basic IP blocks to show.
-                        if true { 
-                            let host_info = info.hostname.as_ref()
-                                .map(|h| format!(" [{}]", h))
-                                .or_else(|| info.full_url.as_ref().map(|u| format!(" [{}]", u)))
-                                .unwrap_or_default();
-                            let _ = tx.emit("log", LogEntry {
-                                id: format!("{}-blocked", now),
-                                timestamp: now,
-                                level: LogLevel::Warning,
-                                message: format!("🚫 {}{}  | {}->{}:{}", reason, host_info, info.src_ip, info.dst_ip, info.dst_port)
-                            });
-                        }
+                        let host_info = info.hostname.as_ref()
+                            .map(|h| format!(" [{}]", h))
+                            .or_else(|| info.full_url.as_ref().map(|u| format!(" [{}]", u)))
+                            .unwrap_or_default();
+                        let _ = tx.emit("log", LogEntry {
+                            id: format!("{}-blocked", now),
+                            timestamp: now,
+                            level: LogLevel::Warning,
+                            message: format!("🚫 {}{}  | {}->{}:{}", reason, host_info, info.src_ip, info.dst_ip, info.dst_port)
+                        });
                    }
                 }
             }

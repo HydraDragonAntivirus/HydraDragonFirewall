@@ -55,6 +55,9 @@ aside {
     display: flex;
     flex-direction: column;
     padding: 30px 20px;
+    z-index: 1000;
+    /* High priority */
+    position: relative;
 }
 
 .logo-area {
@@ -100,6 +103,9 @@ nav {
     font-weight: 500;
     font-size: 14px;
     transition: var(--transition);
+    cursor: pointer;
+    position: relative;
+    z-index: 1001;
 }
 
 .nav-item:hover,
@@ -116,6 +122,9 @@ main {
     flex-direction: column;
     gap: 30px;
     overflow-y: auto;
+    position: relative;
+    z-index: 1;
+    /* Lower than aside but has context */
 }
 
 /* Glass Cards */
@@ -129,28 +138,149 @@ main {
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
-/* Stats Grid */
-.stats-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 20px;
+/* Dashboard Grid */
+.dashboard-grid {
+    display: flex;
+    gap: 30px;
+    height: 100%;
 }
 
-.stat-item h4 {
+.dash-col-main {
+    flex: 3;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-width: 0;
+}
+
+.dash-col-side {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-width: 250px;
+}
+
+/* Status Card */
+.status-card {
+    position: relative;
+    overflow: hidden;
+    padding: 0;
+}
+
+.status-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 24px 24px 0 24px;
+    z-index: 10;
+    position: relative;
+}
+
+.status-header h3 {
+    margin: 0 0 5px 0;
+    font-size: 14px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.status-badge {
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: 1px;
+}
+
+.status-badge.secure {
+    color: var(--accent-green);
+    text-shadow: 0 0 20px rgba(0, 255, 136, 0.3);
+}
+
+.pulse-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.7);
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.7);
+    }
+
+    70% {
+        box-shadow: 0 0 0 10px rgba(0, 255, 136, 0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(0, 255, 136, 0);
+    }
+}
+
+/* Traffic Graph */
+.traffic-graph-container {
+    position: relative;
+    height: 200px;
+    margin-top: -20px;
+}
+
+.traffic-svg {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 0 10px rgba(62, 148, 255, 0.2));
+}
+
+.graph-overlay {
+    position: absolute;
+    top: 50%;
+    right: 30px;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(4px);
+    padding: 15px;
+    border-radius: 12px;
+    border: 1px solid var(--glass-border);
+}
+
+.traffic-stat {
+    display: flex;
+    flex-direction: column;
+}
+
+.traffic-stat .label {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+
+.traffic-stat .value {
+    font-size: 18px;
+    font-weight: 600;
+    font-family: 'Fira Code', monospace;
+}
+
+/* Compact Stats */
+.stat-item-compact h4 {
     margin: 0 0 8px 0;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 1px;
 }
 
-.stat-value {
-    font-size: 32px;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
+.stat-item-compact .stat-value {
+    font-size: 24px;
 }
 
-/* Logs Area */
+/* Logs Area Adjustments */
 .logs-section {
     flex: 1;
     display: flex;
@@ -246,10 +376,14 @@ main {
     z-index: 2000;
     align-items: center;
     justify-content: center;
+    pointer-events: none;
+    /* Defensive: don't block when hidden */
 }
 
 .modal-overlay.open {
     display: flex;
+    pointer-events: auto;
+    /* Active: allow clicks when open */
 }
 
 .glass-modal {
@@ -259,6 +393,8 @@ main {
     border-radius: 20px;
     padding: 40px;
     position: relative;
+    z-index: 2001;
+    /* Above overlay */
 }
 
 .input-group {
@@ -274,7 +410,8 @@ main {
 }
 
 .input-group input,
-.input-group select {
+.input-group select,
+.input-group textarea {
     width: 100%;
     background: #1a1d24;
     border: 1px solid var(--glass-border);
@@ -282,6 +419,8 @@ main {
     border-radius: 10px;
     color: white;
     font-family: inherit;
+    cursor: text;
+    /* Explicit text cursor */
 }
 
 .input-group input:focus {

@@ -49,6 +49,20 @@ async fn get_settings<R: Runtime>(
     }
 }
 
+#[tauri::command]
+async fn save_settings(
+    settings: crate::engine::FirewallSettings,
+    handle: AppHandle
+) -> Result<(), String> {
+    if let Some(engine) = handle.try_state::<Arc<FirewallEngine>>() {
+        engine.apply_settings(settings);
+        engine.save_settings();
+        Ok(())
+    } else {
+        Err("Engine not initialized".to_string())
+    }
+}
+
 pub fn run() {
     println!("DEBUG: hydradragonfirewall::run() entered");
     println!("--- HydraDragon Firewall Booting (Tauri 2.0) ---");
@@ -82,7 +96,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             add_whitelist_entry,
             resolve_app_decision,
-            get_settings
+            get_settings,
+            save_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
