@@ -32,13 +32,6 @@ pub struct LogEntry {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct WhitelistArgs {
-    item: String,
-    reason: String,
-    category: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PendingApp {
     pub process_id: u32,
     pub name: String,
@@ -92,12 +85,6 @@ pub struct FirewallRule {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct FirewallSettings {
     #[serde(default)]
-    pub whitelisted_ips: Vec<String>,
-    #[serde(default)]
-    pub whitelisted_domains: Vec<String>,
-    #[serde(default)]
-    pub whitelisted_ports: Vec<u16>,
-    #[serde(default)]
     pub blocked_keywords: Vec<String>,
     #[serde(default)]
     pub website_path: String,
@@ -116,12 +103,6 @@ pub fn App() -> impl IntoView {
     // Navigation State
     let (current_view, set_current_view) = create_signal(AppView::Dashboard);
 
-    // Modal States
-    let (show_modal, set_show_modal) = create_signal(false);
-    let (wl_item, set_wl_item) = create_signal(String::new());
-    let (wl_category, set_wl_category) = create_signal("Trusted".to_string());
-    let (wl_reason, set_wl_reason) = create_signal(String::new());
-    
     // Rule Modal State & Validation
     let (show_rule_modal, set_show_rule_modal) = create_signal(false);
     let (new_rule_name, set_new_rule_name) = create_signal(String::new());
@@ -162,9 +143,6 @@ pub fn App() -> impl IntoView {
         }, Duration::from_millis(2000));
     });
     let (settings, set_settings) = create_signal(FirewallSettings {
-        whitelisted_ips: vec![],
-        whitelisted_domains: vec![],
-        whitelisted_ports: vec![],
         blocked_keywords: vec![],
         website_path: "website".to_string(),
         rules: vec![],
@@ -285,23 +263,6 @@ pub fn App() -> impl IntoView {
 
     let update_path = move |path: String| {
         set_settings.update(|s| s.website_path = path);
-    };
-
-    let submit_whitelist = move |ev: leptos::ev::SubmitEvent| {
-        ev.prevent_default();
-        spawn_local(async move {
-            let args = WhitelistArgs {
-                item: wl_item.get(),
-                reason: wl_reason.get(),
-                category: wl_category.get(),
-            };
-            let args_js = serde_wasm_bindgen::to_value(&args).unwrap();
-            
-            let _ = invoke("add_whitelist_entry", args_js).await;
-            set_show_modal.set(false);
-            set_wl_item.set(String::new());
-            set_wl_reason.set(String::new());
-        });
     };
 
     let resolve_decision = move |name: String, decision: String| {
@@ -434,9 +395,7 @@ pub fn App() -> impl IntoView {
                     </a>
                 </nav>
                 <div style="margin-top: auto">
-                    <button class="btn-primary" style="width: 100%" on:click=move |_| set_show_modal.set(true)>
-                        "+ WHITELIST"
-                    </button>
+                    <div class="callout">"Zero Trust: no implicit whitelists"</div>
                 </div>
             </aside>
 
@@ -727,66 +686,20 @@ pub fn App() -> impl IntoView {
                                 </div>
                             </div>
 
-                            // Whitelist Management Card
+                            // Zero Trust Policy Card
                             <div class="glass-card" style="width: 100%">
                                 <div class="section-header">
-                                    <h3 style="margin: 0">"🛡️ Whitelist Management"</h3>
-                                    <span style="font-size: 12px; color: var(--text-muted)">"trusted IPs, domains, and ports"</span>
+                                    <h3 style="margin: 0">"🛡️ Zero Trust Enforcement"</h3>
+                                    <span style="font-size: 12px; color: var(--text-muted)">"no implicit whitelists; use rules or app approvals"</span>
                                 </div>
-                                
-                                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 20px">
-                                    // Whitelisted IPs
-                                    <div style="background: rgba(0,255,136,0.05); padding: 15px; border-radius: 10px; border: 1px solid rgba(0,255,136,0.1)">
-                                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px">
-                                            <span style="font-size: 16px">"🌐"</span>
-                                            <span style="font-weight: 600; font-size: 13px; color: var(--accent-green)">"WHITELISTED IPs"</span>
-                                        </div>
-                                        <textarea 
-                                            style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); color: white; padding: 10px; width: 100%; height: 100px; border-radius: 6px; font-family: 'Fira Code', monospace; font-size: 12px; resize: vertical"
-                                            placeholder="127.0.0.1\n192.168.1.1\n10.0.0.1"
-                                            on:input=move |ev| {
-                                                let val = event_target_value(&ev);
-                                                set_settings.update(|s| s.whitelisted_ips = val.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect());
-                                            }
-                                        >
-                                        {move || settings.get().whitelisted_ips.join("\n")}
-                                        </textarea>
+                                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-top: 16px">
+                                    <div style="background: rgba(255,90,90,0.08); padding: 15px; border-radius: 10px; border: 1px solid rgba(255,90,90,0.25)">
+                                        <h4 style="margin: 0 0 6px 0; font-size: 14px">"Default-Deny Posture"</h4>
+                                        <p style="margin: 0; font-size: 12px; color: var(--text-muted)">"All non-localhost traffic is blocked until an app approval or explicit allow rule authorizes it."</p>
                                     </div>
-
-                                    // Whitelisted Domains
-                                    <div style="background: rgba(62,148,255,0.05); padding: 15px; border-radius: 10px; border: 1px solid rgba(62,148,255,0.1)">
-                                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px">
-                                            <span style="font-size: 16px">"🔗"</span>
-                                            <span style="font-weight: 600; font-size: 13px; color: var(--accent-blue)">"WHITELISTED DOMAINS"</span>
-                                        </div>
-                                        <textarea 
-                                            style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); color: white; padding: 10px; width: 100%; height: 100px; border-radius: 6px; font-family: 'Fira Code', monospace; font-size: 12px; resize: vertical"
-                                            placeholder="google.com\ncloudflare.com\ngithub.com"
-                                            on:input=move |ev| {
-                                                let val = event_target_value(&ev);
-                                                set_settings.update(|s| s.whitelisted_domains = val.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect());
-                                            }
-                                        >
-                                        {move || settings.get().whitelisted_domains.join("\n")}
-                                        </textarea>
-                                    </div>
-
-                                    // Whitelisted Ports
-                                    <div style="background: rgba(255,204,0,0.05); padding: 15px; border-radius: 10px; border: 1px solid rgba(255,204,0,0.1)">
-                                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px">
-                                            <span style="font-size: 16px">"🔌"</span>
-                                            <span style="font-weight: 600; font-size: 13px; color: var(--accent-yellow)">"WHITELISTED PORTS"</span>
-                                        </div>
-                                        <textarea 
-                                            style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); color: white; padding: 10px; width: 100%; height: 100px; border-radius: 6px; font-family: 'Fira Code', monospace; font-size: 12px; resize: vertical"
-                                            placeholder="80\n443\n8080"
-                                            on:input=move |ev| {
-                                                let val = event_target_value(&ev);
-                                                set_settings.update(|s| s.whitelisted_ports = val.lines().filter_map(|l| l.trim().parse::<u16>().ok()).collect());
-                                            }
-                                        >
-                                        {move || settings.get().whitelisted_ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("\n")}
-                                        </textarea>
+                                    <div style="background: rgba(62,148,255,0.08); padding: 15px; border-radius: 10px; border: 1px solid rgba(62,148,255,0.25)">
+                                        <h4 style="margin: 0 0 6px 0; font-size: 14px">"How to Allow"</h4>
+                                        <p style="margin: 0; font-size: 12px; color: var(--text-muted)">"Approve the app prompt or add an allow rule to open specific hosts or ports—no hidden allowlists remain."</p>
                                     </div>
                                 </div>
                             </div>
@@ -804,48 +717,6 @@ pub fn App() -> impl IntoView {
                 }}
             </main>
 
-            <div class={move || if show_modal.get() { "modal-overlay open" } else { "modal-overlay" }}
-                 style={move || if !show_modal.get() { "pointer-events: none" } else { "pointer-events: auto" }}>
-                <div class="glass-modal">
-                    <h2 style="margin-top: 0">"Whitelist Request"</h2>
-                    <form on:submit=submit_whitelist>
-                        <div class="input-group">
-                            <label>"TARGET IP / DOMAIN"</label>
-                            <input type="text" required placeholder="e.g. cloudflare.com"
-                                   on:input=move |ev| set_wl_item.set(event_target_value(&ev))
-                                   prop:value=wl_item
-                            />
-                        </div>
-                        <div class="input-group">
-                            <label>"SECURITY CATEGORY"</label>
-                            <select on:change=move |ev| set_wl_category.set(event_target_value(&ev)) prop:value=wl_category>
-                                <option value="Trusted">"Business / Trusted"</option>
-                                <option value="Development">"Development Lab"</option>
-                                <option value="Gaming">"Gaming / Latency Critical"</option>
-                                <option value="Other">"General Override"</option>
-                            </select>
-                        </div>
-                        <div class="input-group">
-                            <label>"JUSTIFICATION"</label>
-                            <input type="text" required placeholder="Reason for bypass..."
-                                   on:input=move |ev| set_wl_reason.set(event_target_value(&ev))
-                                   prop:value=wl_reason
-                            />
-                        </div>
-                        <div style="display: flex; gap: 15px; margin-top: 30px">
-                            <button type="button" class="btn-primary" 
-                                    style="background: #2a2d35; box-shadow: none; flex: 1"
-                                    on:click=move |_| set_show_modal.set(false)>
-                                "DISMISS"
-                            </button>
-                            <button type="submit" class="btn-primary" style="flex: 2">
-                                "AUTHORIZE ACCESS"
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-            
             <div class={move || if show_rule_modal.get() { "modal-overlay open" } else { "modal-overlay" }}
                  style={move || if !show_rule_modal.get() { "pointer-events: none" } else { "pointer-events: auto" }}>
                 <div class="glass-modal" style="width: 850px; max-width: 95vw; background: #1e1e1e; border: 1px solid #333; box-shadow: 0 10px 40px rgba(0,0,0,0.6); padding: 0; overflow: hidden; display: flex; flex-direction: column; border-radius: 8px">

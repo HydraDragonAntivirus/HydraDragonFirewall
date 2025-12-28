@@ -1,5 +1,5 @@
-use std::ffi::c_void;
 use lazy_static::lazy_static;
+use std::ffi::c_void;
 
 // WinDivert Constants
 pub const WINDIVERT_LAYER_NETWORK: u32 = 0;
@@ -23,11 +23,29 @@ impl WinDivertAddress {
 }
 
 // Function Signatures
-type WinDivertOpenFn = unsafe extern "system" fn(filter: *const u8, layer: u32, priority: i16, flags: u64) -> isize;
-type WinDivertRecvFn = unsafe extern "system" fn(handle: isize, packet: *mut u8, packet_len: u32, address: *mut WinDivertAddress, read_len: *mut u32) -> i32;
-type WinDivertSendFn = unsafe extern "system" fn(handle: isize, packet: *const u8, packet_len: u32, address: *const WinDivertAddress, write_len: *mut u32) -> i32;
+type WinDivertOpenFn =
+    unsafe extern "system" fn(filter: *const u8, layer: u32, priority: i16, flags: u64) -> isize;
+type WinDivertRecvFn = unsafe extern "system" fn(
+    handle: isize,
+    packet: *mut u8,
+    packet_len: u32,
+    address: *mut WinDivertAddress,
+    read_len: *mut u32,
+) -> i32;
+type WinDivertSendFn = unsafe extern "system" fn(
+    handle: isize,
+    packet: *const u8,
+    packet_len: u32,
+    address: *const WinDivertAddress,
+    write_len: *mut u32,
+) -> i32;
 type WinDivertCloseFn = unsafe extern "system" fn(handle: isize) -> i32;
-type WinDivertHelperCalcChecksumsFn = unsafe extern "system" fn(packet: *mut u8, packet_len: u32, address: *mut WinDivertAddress, flags: u64) -> u32;
+type WinDivertHelperCalcChecksumsFn = unsafe extern "system" fn(
+    packet: *mut u8,
+    packet_len: u32,
+    address: *mut WinDivertAddress,
+    flags: u64,
+) -> u32;
 
 // Dynamic Loader
 pub struct WinDivertApi {
@@ -44,9 +62,9 @@ lazy_static! {
 
 fn load_windivert() -> Option<WinDivertApi> {
     unsafe {
-        use windows::Win32::System::LibraryLoader::{LoadLibraryA, GetProcAddress};
+        use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
         use windows::core::PCSTR;
-        
+
         let dll_name = std::ffi::CString::new("WinDivert.dll").unwrap();
         let handle = match LoadLibraryA(PCSTR::from_raw(dll_name.as_ptr() as *const u8)) {
             Ok(h) => h,
@@ -68,7 +86,12 @@ fn load_windivert() -> Option<WinDivertApi> {
         let close_ptr = get_proc("WinDivertClose");
         let calc_ptr = get_proc("WinDivertHelperCalcChecksums");
 
-        if open_ptr.is_null() || recv_ptr.is_null() || send_ptr.is_null() || close_ptr.is_null() || calc_ptr.is_null() {
+        if open_ptr.is_null()
+            || recv_ptr.is_null()
+            || send_ptr.is_null()
+            || close_ptr.is_null()
+            || calc_ptr.is_null()
+        {
             println!("ERROR: Could not find all WinDivert functions");
             return None;
         }

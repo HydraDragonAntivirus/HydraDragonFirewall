@@ -1,13 +1,13 @@
 //! TLS Parser Module - Extracts SNI (Server Name Indication) from TLS Client Hello packets
-//! 
+//!
 //! This module parses TLS handshake packets to extract the hostname being connected to,
 //! enabling the firewall to filter HTTPS traffic by domain name.
 
 /// Extracts the Server Name Indication (SNI) hostname from a TLS Client Hello packet.
-/// 
+///
 /// # Arguments
 /// * `data` - Raw packet payload (TCP payload, not including IP/TCP headers)
-/// 
+///
 /// # Returns
 /// * `Some(String)` - The extracted hostname if this is a valid TLS Client Hello with SNI
 /// * `None` - If the packet is not a TLS Client Hello or has no SNI extension
@@ -50,14 +50,15 @@ pub fn extract_sni(data: &[u8]) -> Option<String> {
     if handshake.len() < 4 {
         return None;
     }
-    let handshake_length = u32::from_be_bytes([0, handshake[1], handshake[2], handshake[3]]) as usize;
+    let handshake_length =
+        u32::from_be_bytes([0, handshake[1], handshake[2], handshake[3]]) as usize;
     if handshake.len() < 4 + handshake_length {
         return None;
     }
 
     // Client Hello starts at offset 4
     let client_hello = &handshake[4..];
-    
+
     // Skip: Version (2) + Random (32) = 34 bytes
     if client_hello.len() < 34 {
         return None;
@@ -75,7 +76,8 @@ pub fn extract_sni(data: &[u8]) -> Option<String> {
     if client_hello.len() < offset + 2 {
         return None;
     }
-    let cipher_suites_len = u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]) as usize;
+    let cipher_suites_len =
+        u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]) as usize;
     offset += 2 + cipher_suites_len;
 
     // Compression Methods length (1 byte) + Compression Methods
@@ -89,14 +91,16 @@ pub fn extract_sni(data: &[u8]) -> Option<String> {
     if client_hello.len() < offset + 2 {
         return None;
     }
-    let extensions_len = u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]) as usize;
+    let extensions_len =
+        u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]) as usize;
     offset += 2;
 
     // Parse extensions
     let extensions_end = offset + extensions_len;
     while offset + 4 <= extensions_end && offset + 4 <= client_hello.len() {
         let ext_type = u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]);
-        let ext_len = u16::from_be_bytes([client_hello[offset + 2], client_hello[offset + 3]]) as usize;
+        let ext_len =
+            u16::from_be_bytes([client_hello[offset + 2], client_hello[offset + 3]]) as usize;
         offset += 4;
 
         if offset + ext_len > client_hello.len() {
@@ -121,14 +125,14 @@ fn parse_sni_extension(data: &[u8]) -> Option<String> {
     // - Server Name Type (1 byte, 0x00 = hostname)
     // - Server Name Length (2 bytes)
     // - Server Name (variable)
-    
+
     if data.len() < 5 {
         return None;
     }
 
     let _list_len = u16::from_be_bytes([data[0], data[1]]);
     let name_type = data[2];
-    
+
     // Type 0x00 = DNS hostname
     if name_type != 0x00 {
         return None;

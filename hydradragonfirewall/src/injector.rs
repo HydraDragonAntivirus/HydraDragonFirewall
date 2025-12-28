@@ -1,14 +1,12 @@
 use std::ffi::CString;
-use windows::Win32::Foundation::{CloseHandle};
-use windows::Win32::System::Memory::{
-    VirtualAllocEx, MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE,
-};
+use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
+use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+use windows::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx};
 use windows::Win32::System::Threading::{
     CreateRemoteThread, OpenProcess, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
     PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
 };
-use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 
 #[allow(dead_code)]
 pub struct Injector;
@@ -18,10 +16,15 @@ impl Injector {
     pub fn inject(pid: u32, dll_path: &str) -> Result<(), String> {
         unsafe {
             let process_handle = OpenProcess(
-                PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
+                PROCESS_CREATE_THREAD
+                    | PROCESS_QUERY_INFORMATION
+                    | PROCESS_VM_OPERATION
+                    | PROCESS_VM_WRITE
+                    | PROCESS_VM_READ,
                 false.into(),
                 pid,
-            ).map_err(|e| format!("OpenProcess failed: {}", e))?;
+            )
+            .map_err(|e| format!("OpenProcess failed: {}", e))?;
 
             if process_handle.is_invalid() {
                 return Err("Invalid process handle".to_string());
@@ -85,13 +88,16 @@ impl Injector {
             let _ = CloseHandle(process_handle);
 
             if let Ok(th) = thread_handle {
-                 if th.is_invalid() {
-                     return Err("CreateRemoteThread returned invalid handle".to_string());
-                 }
-                 let _ = CloseHandle(th);
-                 Ok(())
+                if th.is_invalid() {
+                    return Err("CreateRemoteThread returned invalid handle".to_string());
+                }
+                let _ = CloseHandle(th);
+                Ok(())
             } else {
-                Err(format!("CreateRemoteThread failed: {:?}", thread_handle.err()))
+                Err(format!(
+                    "CreateRemoteThread failed: {:?}",
+                    thread_handle.err()
+                ))
             }
         }
     }
