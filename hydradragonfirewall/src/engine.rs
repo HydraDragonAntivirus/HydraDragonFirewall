@@ -1,5 +1,7 @@
 use crate::injector::Injector;
 use crate::web_filter::WebFilter;
+use lazy_static::lazy_static;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -10,6 +12,15 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use windivert::prelude::*;
+
+lazy_static! {
+    static ref URL_REGEX: Regex =
+        Regex::new(r"(?i)https?://[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]+")
+            .expect("failed to compile URL regex");
+    static ref DOMAIN_TOKEN_REGEX: Regex =
+        Regex::new(r"(?i)\b([a-z0-9][a-z0-9-]{0,62}\.)+[a-z]{2,}\b")
+            .expect("failed to compile domain token regex");
+}
 // Imports updated below
 
 // ============================================================================
@@ -66,6 +77,10 @@ pub struct PacketInfo {
     pub payload_entropy: Option<f64>,
     /// Hex preview of the first bytes of the payload for forensic visibility
     pub payload_sample: Option<String>,
+    /// URLs discovered anywhere in the payload (helps catch malware beacons and C2s)
+    pub payload_urls: Vec<String>,
+    /// Domain-like tokens discovered in the payload for additional matching
+    pub payload_domains: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1143,6 +1158,24 @@ impl FirewallEngine {
                         break;
                     }
                 }
+                if info
+                    .payload_urls
+                    .iter()
+                    .any(|u| u.to_lowercase().contains(&kw_lower))
+                {
+                    should_forward = false;
+                    reason = format!("Keyword Blocked (Payload URL): {}", keyword);
+                    break;
+                }
+                if info
+                    .payload_domains
+                    .iter()
+                    .any(|d| d.to_lowercase().contains(&kw_lower))
+                {
+                    should_forward = false;
+                    reason = format!("Keyword Blocked (Payload Domain): {}", keyword);
+                    break;
+                }
             }
 
             if should_forward {
@@ -1197,6 +1230,26 @@ impl FirewallEngine {
                     if let Some(block_reason) = wf.check_url(url) {
                         should_forward = false;
                         reason = block_reason;
+                    }
+                }
+            }
+
+            if should_forward {
+                for url in &info.payload_urls {
+                    if let Some(block_reason) = wf.check_url(url) {
+                        should_forward = false;
+                        reason = block_reason;
+                        break;
+                    }
+                }
+            }
+
+            if should_forward {
+                for domain in &info.payload_domains {
+                    if let Some(block_reason) = wf.check_hostname(domain) {
+                        should_forward = false;
+                        reason = block_reason;
+                        break;
                     }
                 }
             }
@@ -1332,6 +1385,48 @@ impl FirewallEngine {
             .as_millis() as u64
     }
 
+    fn extract_payload_text(bytes: &[u8]) -> Option<String> {
+        if bytes.is_empty() {
+            return None;
+        }
+        match std::str::from_utf8(bytes) {
+            Ok(s) => Some(s.to_string()),
+            Err(_) => Some(String::from_utf8_lossy(bytes).to_string()),
+        }
+    }
+
+    fn discover_urls_and_domains(bytes: &[u8]) -> (Vec<String>, Vec<String>) {
+        let mut urls = Vec::new();
+        let mut domains = Vec::new();
+
+        if let Some(text) = Self::extract_payload_text(bytes) {
+            let mut seen = HashSet::new();
+            for m in URL_REGEX.find_iter(&text) {
+                let url = m.as_str().trim_matches(|c: char| c == '"' || c == '\'');
+                if seen.insert(url.to_string()) {
+                    urls.push(url.to_string());
+                }
+                if urls.len() >= 8 {
+                    break;
+                }
+            }
+
+            for m in DOMAIN_TOKEN_REGEX.find_iter(&text) {
+                let domain = m
+                    .as_str()
+                    .trim_matches(|c: char| c == '.' || c == '[' || c == ']');
+                if seen.insert(domain.to_string()) {
+                    domains.push(domain.to_string());
+                }
+                if domains.len() >= 8 {
+                    break;
+                }
+            }
+        }
+
+        (urls, domains)
+    }
+
     fn parse_packet(data: &[u8], outbound: bool, process_id: u32) -> Option<PacketInfo> {
         if data.len() < 20 {
             return None;
@@ -1375,6 +1470,8 @@ impl FirewallEngine {
         let mut payload_entropy = None;
         let mut payload_sample = None;
         let mut payload_bytes: Option<&[u8]> = None;
+        let mut payload_urls: Vec<String> = Vec::new();
+        let mut payload_domains: Vec<String> = Vec::new();
 
         // Extract hostname and URL from TCP payloads
         if matches!(protocol, Protocol::TCP) && header_len + 20 < data.len() {
@@ -1395,11 +1492,16 @@ impl FirewallEngine {
                 if dst_port == 443 || src_port == 443 {
                     hostname = crate::tls_parser::extract_sni(payload);
                 }
-                // Check for HTTP (port 80) - Full URL extraction
-                else if dst_port == 80 || src_port == 80 {
-                    if let Some(http_info) = crate::http_parser::extract_http_info(payload) {
-                        hostname = http_info.host.clone();
-                        full_url = http_info.full_url;
+
+                // Check for HTTP regardless of port if the payload looks like HTTP traffic
+                if crate::http_parser::is_http_request(payload) || dst_port == 80 || src_port == 80
+                {
+                    let hinted_port = if outbound { dst_port } else { src_port };
+                    if let Some(http_info) =
+                        crate::http_parser::extract_http_info(payload, Some(hinted_port))
+                    {
+                        hostname = http_info.host.clone().or(hostname);
+                        full_url = http_info.full_url.or(full_url);
                         http_method = Some(http_info.method);
                         http_path = Some(http_info.path);
                         http_user_agent = http_info.user_agent;
@@ -1424,6 +1526,12 @@ impl FirewallEngine {
             hostname = dns_query.clone();
         }
 
+        if hostname.is_none() {
+            if let Some(domain) = payload_domains.first() {
+                hostname = Some(domain.clone());
+            }
+        }
+
         if payload_bytes.is_none() {
             // For non-TCP/UDP payloads, fall back to bytes after the IP header when possible
             if header_len < data.len() {
@@ -1440,6 +1548,10 @@ impl FirewallEngine {
                     .map(|b| format!("{:02X}", b))
                     .collect();
                 payload_sample = Some(preview.join(" "));
+
+                let (urls, domains) = Self::discover_urls_and_domains(bytes);
+                payload_urls = urls;
+                payload_domains = domains;
             }
         }
 
@@ -1463,6 +1575,8 @@ impl FirewallEngine {
             http_referer,
             payload_entropy,
             payload_sample,
+            payload_urls,
+            payload_domains,
         })
     }
 
@@ -1513,6 +1627,14 @@ impl FirewallEngine {
         }
         if let Some(ref sample) = info.payload_sample {
             parts.push(format!("hex={}", sample));
+        }
+        if !info.payload_urls.is_empty() {
+            let summary: Vec<String> = info.payload_urls.iter().take(3).cloned().collect();
+            parts.push(format!("urls={}", summary.join(",")));
+        }
+        if !info.payload_domains.is_empty() {
+            let summary: Vec<String> = info.payload_domains.iter().take(3).cloned().collect();
+            parts.push(format!("domains={}", summary.join(",")));
         }
 
         parts.join(" | ")

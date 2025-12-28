@@ -10,6 +10,10 @@ pub struct HttpRequestInfo {
     pub method: String,
     /// Request path (e.g., "/path/to/resource")
     pub path: String,
+    /// Parsed scheme hint (http/https) when it can be inferred
+    pub scheme: Option<String>,
+    /// Server port derived from the Host header or transport metadata
+    pub port: Option<u16>,
     /// Host from the Host header
     pub host: Option<String>,
     /// User-Agent header for richer telemetry/alerting
@@ -35,7 +39,7 @@ const HTTP_METHODS: &[&str] = &[
 /// # Returns
 /// * `Some(HttpRequestInfo)` - If this is a valid HTTP request
 /// * `None` - If the packet is not an HTTP request
-pub fn extract_http_info(data: &[u8]) -> Option<HttpRequestInfo> {
+pub fn extract_http_info(data: &[u8], port_hint: Option<u16>) -> Option<HttpRequestInfo> {
     // Convert to string for parsing
     let text = match std::str::from_utf8(data) {
         Ok(s) => s,
@@ -72,24 +76,59 @@ pub fn extract_http_info(data: &[u8]) -> Option<HttpRequestInfo> {
     }
 
     // Extract key headers
-    let host = extract_header(text, "host").map(|h| h.split(':').next().unwrap_or(&h).to_string());
+    let host_header = extract_header(text, "host");
+    let (host, host_port) = host_header
+        .as_ref()
+        .map(|h| {
+            let mut parts = h.splitn(2, ':');
+            let hostname = parts.next().unwrap_or("").to_string();
+            let port = parts
+                .next()
+                .and_then(|p| p.parse::<u16>().ok())
+                .or(port_hint);
+            (Some(hostname), port)
+        })
+        .unwrap_or((None, port_hint));
     let user_agent = extract_header(text, "user-agent");
     let content_type = extract_header(text, "content-type");
     let referer = extract_header(text, "referer");
 
-    // Reconstruct full URL
+    // Reconstruct full URL with best-effort scheme detection
+    let scheme = if path.starts_with("https://") {
+        Some("https".to_string())
+    } else if path.starts_with("http://") {
+        Some("http".to_string())
+    } else if let Some(port) = host_port {
+        Some(if port == 443 { "https" } else { "http" }.to_string())
+    } else {
+        None
+    };
+
     let full_url = host.as_ref().map(|h| {
         if path.starts_with("http://") || path.starts_with("https://") {
-            // Absolute URL (used in CONNECT or proxy requests)
             path.to_string()
         } else {
-            format!("http://{}{}", h, path)
+            let scheme_prefix = scheme.clone().unwrap_or_else(|| "http".to_string());
+            let port_suffix = if let Some(port) = host_port {
+                if (scheme_prefix == "http" && port != 80)
+                    || (scheme_prefix == "https" && port != 443)
+                {
+                    format!(":{}", port)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+            format!("{}://{}{}{}", scheme_prefix, h, port_suffix, path)
         }
     });
 
     Some(HttpRequestInfo {
         method: method.to_string(),
         path: path.to_string(),
+        scheme,
+        port: host_port,
         host,
         user_agent,
         content_type,
@@ -135,12 +174,12 @@ pub fn is_http_request(data: &[u8]) -> bool {
 
 /// Extracts just the hostname from HTTP data (convenience function)
 pub fn extract_hostname(data: &[u8]) -> Option<String> {
-    extract_http_info(data).and_then(|info| info.host)
+    extract_http_info(data, None).and_then(|info| info.host)
 }
 
 /// Extracts the full URL from HTTP data (convenience function)
 pub fn extract_full_url(data: &[u8]) -> Option<String> {
-    extract_http_info(data).and_then(|info| info.full_url)
+    extract_http_info(data, None).and_then(|info| info.full_url)
 }
 
 #[cfg(test)]
@@ -150,9 +189,11 @@ mod tests {
     #[test]
     fn test_parse_http_get() {
         let request = b"GET /test/path HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        let info = extract_http_info(request).unwrap();
+        let info = extract_http_info(request, Some(80)).unwrap();
         assert_eq!(info.method, "GET");
         assert_eq!(info.path, "/test/path");
+        assert_eq!(info.scheme, Some("http".to_string()));
+        assert_eq!(info.port, Some(80));
         assert_eq!(info.host, Some("example.com".to_string()));
         assert_eq!(info.user_agent, None);
         assert_eq!(
@@ -164,9 +205,11 @@ mod tests {
     #[test]
     fn test_headers_are_captured() {
         let request = b"POST /submit HTTP/1.1\r\nHost: api.test.local:8080\r\nUser-Agent: curl/8.6.0\r\nContent-Type: application/json\r\nReferer: https://portal.test.local/dashboard\r\n\r\n{}";
-        let info = extract_http_info(request).unwrap();
+        let info = extract_http_info(request, Some(8080)).unwrap();
         assert_eq!(info.method, "POST");
         assert_eq!(info.path, "/submit");
+        assert_eq!(info.scheme, Some("http".to_string()));
+        assert_eq!(info.port, Some(8080));
         assert_eq!(info.host, Some("api.test.local".to_string()));
         assert_eq!(info.user_agent, Some("curl/8.6.0".to_string()));
         assert_eq!(info.content_type, Some("application/json".to_string()));
