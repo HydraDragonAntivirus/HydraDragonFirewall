@@ -1,15 +1,15 @@
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crate::injector::Injector;
+use crate::web_filter::WebFilter;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::Ipv4Addr;
-use std::time::{SystemTime, Duration, UNIX_EPOCH};
-use std::path::PathBuf;
 use std::fs;
-use serde::{Serialize, Deserialize};
+use std::net::Ipv4Addr;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use windivert::prelude::*;
-use crate::web_filter::WebFilter;
-use crate::injector::Injector;
 // Imports updated below
 
 // ============================================================================
@@ -26,7 +26,7 @@ pub enum Protocol {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PacketInfo {
-    pub timestamp: u64, 
+    pub timestamp: u64,
     pub protocol: Protocol,
     pub src_ip: Ipv4Addr,
     pub dst_ip: Ipv4Addr,
@@ -35,6 +35,8 @@ pub struct PacketInfo {
     pub size: usize,
     pub outbound: bool,
     pub process_id: u32,
+    /// DNS question name if this packet carries a DNS query
+    pub dns_query: Option<String>,
     /// Hostname extracted from HTTP Host header or TLS SNI
     pub hostname: Option<String>,
     /// Full URL (HTTP only, HTTPS only has hostname)
@@ -99,15 +101,27 @@ pub struct FirewallRule {
 
 impl FirewallRule {
     pub fn matches(&self, packet: &PacketInfo, app_name: &str) -> bool {
-        if !self.enabled { return false; }
+        if !self.enabled {
+            return false;
+        }
 
         if let Some(ref proto) = self.protocol {
-            if proto != &packet.protocol { return false; }
+            if proto != &packet.protocol {
+                return false;
+            }
         }
 
         // Direction-aware IP/Port matching
-        let remote_ip = if packet.outbound { packet.dst_ip } else { packet.src_ip };
-        let remote_port = if packet.outbound { packet.dst_port } else { packet.src_port };
+        let remote_ip = if packet.outbound {
+            packet.dst_ip
+        } else {
+            packet.src_ip
+        };
+        let remote_port = if packet.outbound {
+            packet.dst_port
+        } else {
+            packet.src_port
+        };
 
         if !self.remote_ips.is_empty() {
             let mut matched_ip = false;
@@ -118,7 +132,9 @@ impl FirewallRule {
                     break;
                 }
             }
-            if !matched_ip { return false; }
+            if !matched_ip {
+                return false;
+            }
         }
 
         if !self.remote_ports.is_empty() {
@@ -164,35 +180,35 @@ impl FirewallRule {
     fn wildcard_match(pattern: &str, text: &str) -> bool {
         let pattern_lower = pattern.to_lowercase();
         let text_lower = text.to_lowercase();
-        
+
         if pattern_lower == "*" || pattern_lower == "any" {
             return true;
         }
-        
+
         // Handle *.example.com pattern
         if pattern_lower.starts_with("*.") {
             let suffix = &pattern_lower[1..]; // Keep the dot
             return text_lower.ends_with(suffix) || text_lower == &pattern_lower[2..];
         }
-        
+
         // Handle *keyword* pattern
         if pattern_lower.starts_with('*') && pattern_lower.ends_with('*') {
-            let keyword = &pattern_lower[1..pattern_lower.len()-1];
+            let keyword = &pattern_lower[1..pattern_lower.len() - 1];
             return text_lower.contains(keyword);
         }
-        
+
         // Handle keyword* pattern
         if pattern_lower.ends_with('*') {
-            let prefix = &pattern_lower[..pattern_lower.len()-1];
+            let prefix = &pattern_lower[..pattern_lower.len() - 1];
             return text_lower.starts_with(prefix);
         }
-        
+
         // Handle *keyword pattern
         if pattern_lower.starts_with('*') {
             let suffix = &pattern_lower[1..];
             return text_lower.ends_with(suffix);
         }
-        
+
         // Exact match
         text_lower == pattern_lower
     }
@@ -244,7 +260,10 @@ impl Default for FirewallSettings {
 
         let mut metadata = HashMap::new();
         metadata.insert("version".to_string(), "2.0.0".to_string());
-        metadata.insert("description".to_string(), "HydraDragon Next-Gen Firewall Configuration".to_string());
+        metadata.insert(
+            "description".to_string(),
+            "HydraDragon Next-Gen Firewall Configuration".to_string(),
+        );
         metadata.insert("theme".to_string(), "cyberpunk".to_string());
 
         Self {
@@ -268,7 +287,7 @@ pub struct Statistics {
     pub dns_queries: AtomicU64,
     pub dns_blocked: AtomicU64,
     pub tcp_connections: AtomicU64,
-    pub last_log_time: AtomicU64, // Rate limiting for blocked
+    pub last_log_time: AtomicU64,         // Rate limiting for blocked
     pub last_allowed_log_time: AtomicU64, // Rate limiting for allowed
 }
 
@@ -302,7 +321,7 @@ impl DnsHandler {
 
     pub fn should_block(&self, domain: &str, settings: &FirewallSettings) -> bool {
         let domain_lower = domain.to_lowercase();
-        
+
         // Check dynamic keywords from settings
         for pattern in &settings.blocked_keywords {
             if domain_lower.contains(&pattern.to_lowercase()) {
@@ -315,7 +334,10 @@ impl DnsHandler {
     pub fn log_query(&self, domain: String, blocked: bool) {
         let mut queries = self.queries.write().unwrap();
         queries.push_back(DnsQuery {
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
             domain,
             blocked,
         });
@@ -356,12 +378,12 @@ impl AppNameCache {
         let name = Self::fetch_app_name(pid);
         let mut cache = self.cache.write().unwrap();
         cache.insert(pid, (name.clone(), SystemTime::now()));
-        
+
         // Limit cache size
         if cache.len() > 1000 {
             cache.clear();
         }
-        
+
         name
     }
 
@@ -374,15 +396,16 @@ impl AppNameCache {
         {
             use std::ffi::OsString;
             use std::os::windows::ffi::OsStringExt;
-            
+
             unsafe {
                 let handle = OpenProcess(0x0400 | 0x0010, 0, process_id);
                 if !handle.is_null() {
                     let mut buffer: [u16; 260] = [0; 260];
                     let mut size = 260u32;
-                    let success = QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size) != 0;
+                    let success =
+                        QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size) != 0;
                     CloseHandle(handle);
-                    
+
                     if success {
                         let path = OsString::from_wide(&buffer[..size as usize]);
                         if let Some(path_str) = path.to_str() {
@@ -421,7 +444,9 @@ impl AppManager {
     }
 
     pub fn update_port_mapping(&self, port: u16, pid: u32) {
-        if port == 0 || pid == 0 { return; }
+        if port == 0 || pid == 0 {
+            return;
+        }
         let mut map = self.port_map.write().unwrap();
         map.insert(port, pid);
     }
@@ -436,9 +461,13 @@ impl AppManager {
 
         if pid == 0 {
             if packet.outbound {
-                if let Some(p) = self.get_pid_for_port(packet.src_port) { pid = p; }
+                if let Some(p) = self.get_pid_for_port(packet.src_port) {
+                    pid = p;
+                }
             } else {
-                if let Some(p) = self.get_pid_for_port(packet.dst_port) { pid = p; }
+                if let Some(p) = self.get_pid_for_port(packet.dst_port) {
+                    pid = p;
+                }
             }
         }
 
@@ -446,11 +475,11 @@ impl AppManager {
         let app_name_lower = app_name.to_lowercase();
 
         // Self-bypass
-        if pid == std::process::id() 
-            || app_name_lower == "hydradragonfirewall.exe" 
-            || app_name_lower == "system" 
-            || pid == 0 
-            || pid == 4 
+        if pid == std::process::id()
+            || app_name_lower == "hydradragonfirewall.exe"
+            || app_name_lower == "system"
+            || pid == 0
+            || pid == 4
         {
             return (AppDecision::Allow, app_name);
         }
@@ -465,18 +494,18 @@ impl AppManager {
 
         // Add to pending if new
         {
-             let mut known = self.known_apps.write().unwrap();
-             if !known.contains(&app_name_lower) {
-                 known.insert(app_name_lower.clone());
-                 let mut pending = self.pending.write().unwrap();
-                 pending.push_back(PendingApp {
+            let mut known = self.known_apps.write().unwrap();
+            if !known.contains(&app_name_lower) {
+                known.insert(app_name_lower.clone());
+                let mut pending = self.pending.write().unwrap();
+                pending.push_back(PendingApp {
                     process_id: pid,
                     name: app_name.clone(),
                     dst_ip: packet.dst_ip,
                     dst_port: packet.dst_port,
                     protocol: packet.protocol.clone(),
-                 });
-             }
+                });
+            }
         }
 
         (AppDecision::Pending, app_name)
@@ -491,9 +520,18 @@ impl AppManager {
 #[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> *mut std::ffi::c_void;
+    fn OpenProcess(
+        dwDesiredAccess: u32,
+        bInheritHandle: i32,
+        dwProcessId: u32,
+    ) -> *mut std::ffi::c_void;
     fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
-    fn QueryFullProcessImageNameW(hProcess: *mut std::ffi::c_void, dwFlags: u32, lpExeName: *mut u16, lpdwSize: *mut u32) -> i32;
+    fn QueryFullProcessImageNameW(
+        hProcess: *mut std::ffi::c_void,
+        dwFlags: u32,
+        lpExeName: *mut u16,
+        lpdwSize: *mut u32,
+    ) -> i32;
 }
 
 // ============================================================================
@@ -529,7 +567,9 @@ impl<L: windivert::layer::WinDivertLayerTrait> Clone for WinDivertArc<L> {
 }
 impl<L: windivert::layer::WinDivertLayerTrait> std::ops::Deref for WinDivertArc<L> {
     type Target = WinDivert<L>;
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl FirewallEngine {
@@ -541,14 +581,18 @@ impl FirewallEngine {
         let stop_signal = Arc::new(AtomicBool::new(false));
 
         let mut settings_data = Self::load_settings().unwrap_or_default();
-        
+
         // Default allow rules are now handled in Default impl or loaded from disk.
         // We do NOT hardcode them here to allow user to override/remove them.
         if settings_data.app_decisions.is_empty() {
-             settings_data.app_decisions.insert("system".to_string(), AppDecision::Allow);
-             settings_data.app_decisions.insert("hydradragonfirewall.exe".to_string(), AppDecision::Allow);
+            settings_data
+                .app_decisions
+                .insert("system".to_string(), AppDecision::Allow);
+            settings_data
+                .app_decisions
+                .insert("hydradragonfirewall.exe".to_string(), AppDecision::Allow);
         }
-        
+
         if settings_data.rules.is_empty() {
             settings_data.rules.push(FirewallRule {
                 name: "Block ICMP (Ping)".to_string(),
@@ -631,14 +675,17 @@ impl FirewallEngine {
     pub fn is_loopback(ip: Ipv4Addr) -> bool {
         ip.is_loopback() || ip == Ipv4Addr::new(127, 0, 0, 1) || ip == Ipv4Addr::new(0, 0, 0, 0)
     }
-    
+
     pub fn add_whitelist_entry(&self, item: String, reason: String, category: String) {
         let mut wl = self.whitelist.write().unwrap();
         wl.push(WhitelistEntry {
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
             item,
             reason,
-            category
+            category,
         });
     }
 
@@ -666,7 +713,7 @@ impl FirewallEngine {
     pub fn start(&self, app_handle: AppHandle) {
         let stats = Arc::clone(&self.stats);
         let rules = Arc::clone(&self.rules);
-        let _dns = Arc::clone(&self.dns_handler);
+        let dns = Arc::clone(&self.dns_handler);
         let am = Arc::clone(&self.app_manager);
         let wf = Arc::clone(&self.web_filter);
         let stop = Arc::clone(&self.stop_signal);
@@ -678,7 +725,7 @@ impl FirewallEngine {
         let wf_loader = Arc::clone(&self.web_filter);
         let tx_loader = app_handle.clone();
         let settings_arc_loader = Arc::clone(&settings_arc);
-        
+
         std::thread::Builder::new()
             .name("web_filter_loader".to_string())
             .spawn(move || {
@@ -688,47 +735,64 @@ impl FirewallEngine {
                 let path_str = {
                     let s = settings_arc_loader.read().unwrap();
                     if s.website_path.is_empty() {
-                         "website".to_string()
+                        "website".to_string()
                     } else {
-                         s.website_path.clone()
+                        s.website_path.clone()
                     }
                 };
 
-                let _ = tx_loader.emit("log", LogEntry { 
-                    id: format!("{}-web-load-start", ts), timestamp: ts, level: LogLevel::Info, 
-                    message: format!("Loading threat intelligence from: {}", path_str) 
-                });
+                let _ = tx_loader.emit(
+                    "log",
+                    LogEntry {
+                        id: format!("{}-web-load-start", ts),
+                        timestamp: ts,
+                        level: LogLevel::Info,
+                        message: format!("Loading threat intelligence from: {}", path_str),
+                    },
+                );
 
                 // Execute the load
                 match wf_loader.load_from_website_folder(&path_str) {
                     Ok(count) => {
-                         let _ = tx_loader.emit("log", LogEntry { 
-                            id: format!("{}-web-load-success", Self::now_ts()), 
-                            timestamp: Self::now_ts(), 
-                            level: LogLevel::Success, 
-                            message: format!("WebFilter Loaded: {} rules active.", count) 
-                        });
-                    },
+                        let _ = tx_loader.emit(
+                            "log",
+                            LogEntry {
+                                id: format!("{}-web-load-success", Self::now_ts()),
+                                timestamp: Self::now_ts(),
+                                level: LogLevel::Success,
+                                message: format!("WebFilter Loaded: {} rules active.", count),
+                            },
+                        );
+                    }
                     Err(e) => {
-                         let _ = tx_loader.emit("log", LogEntry { 
-                            id: format!("{}-web-load-error", Self::now_ts()), 
-                            timestamp: Self::now_ts(), 
-                            level: LogLevel::Error, 
-                            message: format!("Failed to load 'website' folder: {}", e) 
-                        });
+                        let _ = tx_loader.emit(
+                            "log",
+                            LogEntry {
+                                id: format!("{}-web-load-error", Self::now_ts()),
+                                timestamp: Self::now_ts(),
+                                level: LogLevel::Error,
+                                message: format!("Failed to load 'website' folder: {}", e),
+                            },
+                        );
                     }
                 }
-            }).expect("failed to spawn web_filter_loader thread");
+            })
+            .expect("failed to spawn web_filter_loader thread");
 
         // OPEN WINDIVERT HANDLE ONCE
         let divert = match WinDivert::network("true", 0, WinDivertFlags::new()) {
             Ok(d) => WinDivertArc(Arc::new(d)),
             Err(e) => {
                 let ts = Self::now_ts();
-                let _ = tx.emit("log", LogEntry { 
-                    id: format!("{}-divert-fail", ts), timestamp: ts, level: LogLevel::Error, 
-                    message: format!("❌ WinDivert Open Failed: {:?}", e)
-                });
+                let _ = tx.emit(
+                    "log",
+                    LogEntry {
+                        id: format!("{}-divert-fail", ts),
+                        timestamp: ts,
+                        level: LogLevel::Error,
+                        message: format!("❌ WinDivert Open Failed: {:?}", e),
+                    },
+                );
                 return;
             }
         };
@@ -738,8 +802,11 @@ impl FirewallEngine {
         std::thread::Builder::new()
             .name("pipe_monitor".to_string())
             .spawn(move || {
-                use windows::Win32::System::Pipes::{CreateNamedPipeA, ConnectNamedPipe, PIPE_TYPE_MESSAGE, PIPE_READMODE_MESSAGE, PIPE_WAIT};
                 use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+                use windows::Win32::System::Pipes::{
+                    ConnectNamedPipe, CreateNamedPipeA, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
+                    PIPE_WAIT,
+                };
                 let pipe_name = windows::core::s!("\\\\.\\pipe\\HydraDragonFirewall");
                 loop {
                     unsafe {
@@ -747,31 +814,56 @@ impl FirewallEngine {
                             pipe_name,
                             PIPE_ACCESS_DUPLEX,
                             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-                            1, 1024, 1024, 0, None
-                        ).unwrap_or_default();
-                        
+                            1,
+                            1024,
+                            1024,
+                            0,
+                            None,
+                        )
+                        .unwrap_or_default();
+
                         if !handle.is_invalid() {
                             if ConnectNamedPipe(handle, None).is_ok() {
                                 let mut buffer = [0u8; 1024];
                                 let mut bytes_read = 0;
-                                if windows::Win32::Storage::FileSystem::ReadFile(handle, Some(&mut buffer), Some(&mut bytes_read), None).is_ok() {
-                                    let msg = String::from_utf8_lossy(&buffer[..bytes_read as usize]).to_string();
-                                    
+                                if windows::Win32::Storage::FileSystem::ReadFile(
+                                    handle,
+                                    Some(&mut buffer),
+                                    Some(&mut bytes_read),
+                                    None,
+                                )
+                                .is_ok()
+                                {
+                                    let msg =
+                                        String::from_utf8_lossy(&buffer[..bytes_read as usize])
+                                            .to_string();
+
                                     let mut pid_val = None;
                                     if let Some(p_idx) = msg.find("PID:") {
-                                        let pid_str: String = msg[p_idx+4..].chars().take_while(|c| c.is_digit(10)).collect();
+                                        let pid_str: String = msg[p_idx + 4..]
+                                            .chars()
+                                            .take_while(|c| c.is_digit(10))
+                                            .collect();
                                         pid_val = pid_str.parse::<u32>().ok();
                                     }
 
                                     if let Some(pid) = pid_val {
                                         if msg.contains("URL:") {
                                             if let Some(url_part) = msg.split("URL:").nth(1) {
-                                                am_pipe.url_cache.write().unwrap().insert(pid, url_part.trim().to_string());
+                                                am_pipe
+                                                    .url_cache
+                                                    .write()
+                                                    .unwrap()
+                                                    .insert(pid, url_part.trim().to_string());
                                             }
                                         }
                                         if msg.contains("PORT:") {
                                             if let Some(port_part) = msg.split("PORT:").nth(1) {
-                                                let port_str: String = port_part.trim().chars().take_while(|c| c.is_digit(10)).collect();
+                                                let port_str: String = port_part
+                                                    .trim()
+                                                    .chars()
+                                                    .take_while(|c| c.is_digit(10))
+                                                    .collect();
                                                 if let Ok(port) = port_str.parse::<u16>() {
                                                     am_pipe.update_port_mapping(port, pid);
                                                 }
@@ -785,19 +877,25 @@ impl FirewallEngine {
                     }
                     std::thread::sleep(Duration::from_millis(100));
                 }
-            }).expect("failed to spawn pipe_monitor thread");
+            })
+            .expect("failed to spawn pipe_monitor thread");
 
         let ts = Self::now_ts();
-        let _ = tx.emit("log", LogEntry { 
-            id: format!("{}-divert-active", ts), timestamp: ts, level: LogLevel::Success, 
-            message: "🛡️ Firewall Engine ACTIVE (RADICAL Parallel Mode Enabled)".into() 
-        });
+        let _ = tx.emit(
+            "log",
+            LogEntry {
+                id: format!("{}-divert-active", ts),
+                timestamp: ts,
+                level: LogLevel::Success,
+                message: "🛡️ Firewall Engine ACTIVE (RADICAL Parallel Mode Enabled)".into(),
+            },
+        );
 
         // PENDING APP MONITOR THREAD
         // Checks for new unknown apps and asks the UI
         let am_monitor = Arc::clone(&am);
         let tx_monitor = app_handle.clone();
-        
+
         std::thread::Builder::new()
             .name("pending_monitor".to_string())
             .spawn(move || {
@@ -813,12 +911,13 @@ impl FirewallEngine {
                     if let Some(app) = app_opt {
                         let _ = tx_monitor.emit("ask_app_decision", app);
                         // Don't spam the UI, wait for user validation interaction
-                        std::thread::sleep(Duration::from_millis(500)); 
+                        std::thread::sleep(Duration::from_millis(500));
                     } else {
                         std::thread::sleep(Duration::from_millis(200));
                     }
                 }
-            }).expect("failed to spawn pending_monitor thread");
+            })
+            .expect("failed to spawn pending_monitor thread");
 
         // Worker Pool - RADICAL REFACTOR: Each worker is a fully independent capture loop
         let num_workers = 8; // Increased workers for parallel processing
@@ -829,11 +928,11 @@ impl FirewallEngine {
             let wf_w = Arc::clone(&wf);
             let stop_w = Arc::clone(&stop);
             let settings_w = Arc::clone(&settings_arc);
-            let dns_w = Arc::clone(&_dns);
+            let dns_w = Arc::clone(&dns);
             let tx_log = app_handle.clone();
             let wl_w = Arc::clone(&whitelist_arc);
             let divert_w = divert.clone();
-            
+
             std::thread::Builder::new()
                 .name(format!("packet_worker_{}", worker_id))
                 .spawn(move || {
@@ -844,17 +943,22 @@ impl FirewallEngine {
                             Ok(packet) => {
                                 // println!("DEBUG: Worker Recv Packet len={}", packet.data.len());
                                 let outbound = packet.address.outbound();
-                                
-                                // Serialize Address for Decision Logic 
+
+                                // Serialize Address for Decision Logic
                                 // (Still keep some structure from previous for compatibility)
                                 let addr_bytes = unsafe {
                                     std::slice::from_raw_parts(
                                         &packet.address as *const _ as *const u8,
-                                        std::mem::size_of_val(&packet.address)
-                                    ).to_vec()
+                                        std::mem::size_of_val(&packet.address),
+                                    )
+                                    .to_vec()
                                 };
 
-                                let pid = 0; // Network layer does not provide PID directly in WinDivert 2.x
+                                // WinDivert 2.x exposes the originating PID in the address metadata.
+                                // Using it here allows the AppManager to surface allow/block prompts
+                                // for real processes instead of defaulting to PID 0 ("System"), which
+                                // previously bypassed the decision flow entirely.
+                                let pid = packet.address.process_id();
 
                                 let decision = Self::process_packet_decision(
                                     &packet.data,
@@ -868,7 +972,7 @@ impl FirewallEngine {
                                     &dns_w,
                                     &wl_w,
                                     &tx_log,
-                                    pid
+                                    pid,
                                 );
 
                                 if decision.should_forward {
@@ -878,7 +982,7 @@ impl FirewallEngine {
                                         data: std::borrow::Cow::Borrowed(&decision.packet_data),
                                     };
                                     if let Err(_e) = divert_w.send(&reinject_packet) {
-                                         // Log error selectively?
+                                        // Log error selectively?
                                     }
                                 } else {
                                     // Packet is blocked - we just don't call divert.send()
@@ -890,12 +994,13 @@ impl FirewallEngine {
                                 if err_str.contains("timeout") || err_str.contains("122") {
                                     std::thread::sleep(Duration::from_millis(1));
                                 } else {
-                                     // Hard error - log once and maybe exit thread?
+                                    // Hard error - log once and maybe exit thread?
                                 }
                             }
                         }
                     }
-                }).expect("failed to spawn packet worker");
+                })
+                .expect("failed to spawn packet worker");
         }
     }
 
@@ -908,7 +1013,7 @@ impl FirewallEngine {
         am: &Arc<AppManager>,
         wf: &Arc<WebFilter>,
         settings: &Arc<RwLock<FirewallSettings>>,
-        _dns_handler: &Arc<DnsHandler>,
+        dns_handler: &Arc<DnsHandler>,
         whitelist: &Arc<RwLock<Vec<WhitelistEntry>>>,
         tx: &AppHandle,
         process_id: u32,
@@ -917,19 +1022,33 @@ impl FirewallEngine {
         let mut reason = "Allow".to_string();
 
         if let Some(mut info) = Self::parse_packet(data, outbound, process_id) {
+            // Cache URLs coming from the hook so future packets from the same PID carry context
+            if let Some(ref url) = info.full_url {
+                am.url_cache
+                    .write()
+                    .unwrap()
+                    .insert(process_id, url.clone());
+            }
+
             // Enriched URL from Cache (Hook DLL)
             if info.full_url.is_none() {
                 if let Some(url) = am.url_cache.read().unwrap().get(&process_id) {
                     info.full_url = Some(url.clone());
                 }
             }
+
+            let is_dns_query = matches!(info.protocol, Protocol::UDP)
+                && (info.src_port == 53 || info.dst_port == 53);
+            let dns_domain = info.dns_query.clone();
             // println!("DEBUG: Packet Parsed: {} -> {}", info.src_ip, info.dst_ip);
             // 1. Check Global Whitelist (Dynamic)
             {
                 let wl = whitelist.read().unwrap();
                 for entry in wl.iter() {
-                    if entry.item == info.src_ip.to_string() || entry.item == info.dst_ip.to_string() {
-                         return PacketDecision {
+                    if entry.item == info.src_ip.to_string()
+                        || entry.item == info.dst_ip.to_string()
+                    {
+                        return PacketDecision {
                             packet_data: data.to_vec(),
                             address_data: address_data.to_vec(),
                             should_forward: true,
@@ -951,10 +1070,25 @@ impl FirewallEngine {
 
             // 2. Check Static Whitelist and Keywords from Settings
             let settings_lock = settings.read().unwrap();
-            
+
+            // DNS keyword filtering happens before generic keyword checks so DNS-only traffic can be blocked
+            if should_forward && is_dns_query {
+                if let Some(ref domain) = dns_domain {
+                    if dns_handler.should_block(domain, &*settings_lock) {
+                        should_forward = false;
+                        reason = format!("DNS Keyword Blocked: {}", domain);
+                    }
+                }
+            }
+
             // Static IP/Domain/Port Whitelist
-            if settings_lock.whitelisted_ips.contains(&info.src_ip.to_string()) || 
-               settings_lock.whitelisted_ips.contains(&info.dst_ip.to_string()) {
+            if settings_lock
+                .whitelisted_ips
+                .contains(&info.src_ip.to_string())
+                || settings_lock
+                    .whitelisted_ips
+                    .contains(&info.dst_ip.to_string())
+            {
                 return PacketDecision {
                     packet_data: data.to_vec(),
                     address_data: address_data.to_vec(),
@@ -962,8 +1096,9 @@ impl FirewallEngine {
                     _reason: "Static Whitelist IP".to_string(),
                 };
             }
-            if settings_lock.whitelisted_ports.contains(&info.src_port) || 
-               settings_lock.whitelisted_ports.contains(&info.dst_port) {
+            if settings_lock.whitelisted_ports.contains(&info.src_port)
+                || settings_lock.whitelisted_ports.contains(&info.dst_port)
+            {
                 return PacketDecision {
                     packet_data: data.to_vec(),
                     address_data: address_data.to_vec(),
@@ -1011,7 +1146,7 @@ impl FirewallEngine {
 
             // 3. App Decision Check
             let (app_decision, app_name) = am.check_app(&info);
-            
+
             if should_forward {
                 if app_decision == AppDecision::Allow {
                     stats.packets_total.fetch_add(1, Ordering::Relaxed);
@@ -1071,54 +1206,83 @@ impl FirewallEngine {
             }
 
             stats.packets_total.fetch_add(1, Ordering::Relaxed);
+            if is_dns_query {
+                if let Some(domain) = dns_domain.clone().or_else(|| info.hostname.clone()) {
+                    dns_handler.log_query(domain, !should_forward);
+                }
+            }
             if should_forward {
                 stats.packets_allowed.fetch_add(1, Ordering::Relaxed);
 
                 // ALLOWED TRAFFIC LOGGING (Rate Limited)
                 let now = Self::now_ts();
                 let last = stats.last_allowed_log_time.load(Ordering::Relaxed);
-                
+
                 // Debugging: Print rate limit status
                 // println!("DEBUG: checking rate limit. Now: {}, Last: {}, Diff: {}", now, last, now.saturating_sub(last));
 
                 // Log max 2 allowed events per second to prevent flood
                 if now > last + 500 {
-                   if stats.last_allowed_log_time.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
-                        let host_info = info.hostname.as_ref()
+                    if stats
+                        .last_allowed_log_time
+                        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        let host_info = info
+                            .hostname
+                            .as_ref()
                             .map(|h| format!(" [{}]", h))
                             .or_else(|| info.full_url.as_ref().map(|u| format!(" [{}]", u)))
                             .unwrap_or_default();
-                        
+
                         println!("DEBUG: Emitting Log: {}", reason);
-                        
-                        let _ = tx.emit("log", LogEntry {
-                            id: format!("{}-allow", now),
-                            timestamp: now,
-                            level: LogLevel::Success,
-                            message: format!("✅ {}{} | {}->{}:{}", reason, host_info, info.src_ip, info.dst_ip, info.dst_port)
-                        });
-                   }
+
+                        let _ = tx.emit(
+                            "log",
+                            LogEntry {
+                                id: format!("{}-allow", now),
+                                timestamp: now,
+                                level: LogLevel::Success,
+                                message: format!(
+                                    "✅ {}{} | {}->{}:{}",
+                                    reason, host_info, info.src_ip, info.dst_ip, info.dst_port
+                                ),
+                            },
+                        );
+                    }
                 }
             } else {
                 stats.packets_blocked.fetch_add(1, Ordering::Relaxed);
-                
+
                 // RATE LIMITING
                 let now = Self::now_ts();
                 let last = stats.last_log_time.load(Ordering::Relaxed);
-                
+
                 if now > last + 50 {
-                   if stats.last_log_time.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
-                        let host_info = info.hostname.as_ref()
+                    if stats
+                        .last_log_time
+                        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        let host_info = info
+                            .hostname
+                            .as_ref()
                             .map(|h| format!(" [{}]", h))
                             .or_else(|| info.full_url.as_ref().map(|u| format!(" [{}]", u)))
                             .unwrap_or_default();
-                        let _ = tx.emit("log", LogEntry {
-                            id: format!("{}-blocked", now),
-                            timestamp: now,
-                            level: LogLevel::Warning,
-                            message: format!("🚫 {}{}  | {}->{}:{}", reason, host_info, info.src_ip, info.dst_ip, info.dst_port)
-                        });
-                   }
+                        let _ = tx.emit(
+                            "log",
+                            LogEntry {
+                                id: format!("{}-blocked", now),
+                                timestamp: now,
+                                level: LogLevel::Warning,
+                                message: format!(
+                                    "🚫 {}{}  | {}->{}:{}",
+                                    reason, host_info, info.src_ip, info.dst_ip, info.dst_port
+                                ),
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -1131,20 +1295,25 @@ impl FirewallEngine {
         }
     }
 
-
-
     pub fn inject_dll(&self, pid: u32, dll_path: &str) -> bool {
         Injector::inject(pid, dll_path).is_ok()
     }
 
     fn now_ts() -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
     }
 
     fn parse_packet(data: &[u8], outbound: bool, process_id: u32) -> Option<PacketInfo> {
-        if data.len() < 20 { return None; }
+        if data.len() < 20 {
+            return None;
+        }
         let ip_version = (data[0] >> 4) & 0x0F;
-        if ip_version != 4 { return None; }
+        if ip_version != 4 {
+            return None;
+        }
 
         let protocol = match data[9] {
             6 => Protocol::TCP,
@@ -1159,18 +1328,22 @@ impl FirewallEngine {
 
         let (src_port, dst_port) = if header_len + 4 <= data.len() {
             match protocol {
-                Protocol::TCP | Protocol::UDP => {
-                    (
-                        u16::from_be_bytes([data[header_len], data[header_len + 1]]),
-                        u16::from_be_bytes([data[header_len + 2], data[header_len + 3]])
-                    )
-                },
-                _ => (0, 0)
+                Protocol::TCP | Protocol::UDP => (
+                    u16::from_be_bytes([data[header_len], data[header_len + 1]]),
+                    u16::from_be_bytes([data[header_len + 2], data[header_len + 3]]),
+                ),
+                _ => (0, 0),
             }
-        } else { (0, 0) };
+        } else {
+            (0, 0)
+        };
+
+        let mut hostname = None;
+        let mut full_url = None;
+        let mut dns_query = None;
 
         // Extract hostname and URL from TCP payloads
-        let (hostname, full_url) = if matches!(protocol, Protocol::TCP) && header_len + 20 < data.len() {
+        if matches!(protocol, Protocol::TCP) && header_len + 20 < data.len() {
             // TCP header is at least 20 bytes, data offset is in bits 4-7 of byte 12
             let tcp_header_start = header_len;
             let tcp_data_offset = if tcp_header_start + 12 < data.len() {
@@ -1179,32 +1352,36 @@ impl FirewallEngine {
                 20
             };
             let payload_start = header_len + tcp_data_offset;
-            
+
             if payload_start < data.len() {
                 let payload = &data[payload_start..];
-                
+
                 // Check for HTTPS (port 443) - TLS SNI extraction
                 if dst_port == 443 || src_port == 443 {
-                    let sni = crate::tls_parser::extract_sni(payload);
-                    (sni, None)
+                    hostname = crate::tls_parser::extract_sni(payload);
                 }
                 // Check for HTTP (port 80) - Full URL extraction
                 else if dst_port == 80 || src_port == 80 {
                     if let Some(http_info) = crate::http_parser::extract_http_info(payload) {
-                        (http_info.host.clone(), http_info.full_url)
-                    } else {
-                        (None, None)
+                        hostname = http_info.host.clone();
+                        full_url = http_info.full_url;
                     }
                 }
-                else {
-                    (None, None)
-                }
-            } else {
-                (None, None)
             }
-        } else {
-            (None, None)
-        };
+        }
+
+        // Extract DNS question names from UDP DNS traffic
+        if matches!(protocol, Protocol::UDP)
+            && (src_port == 53 || dst_port == 53)
+            && header_len + 8 <= data.len()
+        {
+            let dns_payload = &data[header_len + 8..];
+            dns_query = Self::parse_dns_query(dns_payload);
+        }
+
+        if hostname.is_none() {
+            hostname = dns_query.clone();
+        }
 
         Some(PacketInfo {
             timestamp: Self::now_ts(),
@@ -1216,8 +1393,46 @@ impl FirewallEngine {
             size: data.len(),
             outbound,
             process_id,
+            dns_query,
             hostname,
             full_url,
         })
+    }
+
+    fn parse_dns_query(payload: &[u8]) -> Option<String> {
+        // Basic DNS header is 12 bytes, bail out if shorter
+        if payload.len() < 12 {
+            return None;
+        }
+
+        let qd_count = u16::from_be_bytes([payload[4], payload[5]]);
+        if qd_count == 0 {
+            return None;
+        }
+
+        let mut offset = 12usize;
+        let mut labels = Vec::new();
+
+        // Parse a single question name (ignoring compression for simplicity)
+        while offset < payload.len() {
+            let len = payload[offset] as usize;
+            offset += 1;
+
+            if len == 0 {
+                break;
+            }
+            if offset + len > payload.len() {
+                return None;
+            }
+
+            labels.push(String::from_utf8_lossy(&payload[offset..offset + len]).to_string());
+            offset += len;
+        }
+
+        if labels.is_empty() {
+            None
+        } else {
+            Some(labels.join("."))
+        }
     }
 }

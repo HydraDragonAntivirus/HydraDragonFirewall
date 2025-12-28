@@ -76,6 +76,17 @@ A high-performance, kernel-mode packet filter powered by WinDivert.
   - **Web Filtering**: Blocks malicious IPs and domains using optimized blocklists (Scam, Malware, Phishing).
   - **Performance**: Zero-copy packet handling for minimal latency.
 
+### Building the firewall components
+
+The Rust firewall and Tauri UI rely on system libraries that are not bundled with the repo. On Debian/Ubuntu-based systems install the GTK/GLib toolchain and pkg-config helpers before running `cargo check` or `cargo tauri dev`:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libglib2.0-dev libgtk-3-dev libayatana-appindicator3-dev
+```
+
+The WinDivert driver itself must be present on Windows when running the firewall; see `copy_driver.ps1` for automating the driver copy step.
+
 ## 📂 File Transfer
 
 Seamlessly transfer files between connected machines.
