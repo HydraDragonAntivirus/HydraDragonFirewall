@@ -52,6 +52,16 @@ pub struct PacketInfo {
     pub hostname: Option<String>,
     /// Full URL (HTTP only, HTTPS only has hostname)
     pub full_url: Option<String>,
+    /// HTTP method when available
+    pub http_method: Option<String>,
+    /// HTTP path when available
+    pub http_path: Option<String>,
+    /// HTTP User-Agent when available
+    pub http_user_agent: Option<String>,
+    /// HTTP Content-Type header when available
+    pub http_content_type: Option<String>,
+    /// HTTP Referer header when available
+    pub http_referer: Option<String>,
     /// Shannon entropy of the packet payload for entropy-based anomaly checks
     pub payload_entropy: Option<f64>,
     /// Hex preview of the first bytes of the payload for forensic visibility
@@ -1357,6 +1367,11 @@ impl FirewallEngine {
         let mut hostname = None;
         let mut full_url = None;
         let mut dns_query = None;
+        let mut http_method = None;
+        let mut http_path = None;
+        let mut http_user_agent = None;
+        let mut http_content_type = None;
+        let mut http_referer = None;
         let mut payload_entropy = None;
         let mut payload_sample = None;
         let mut payload_bytes: Option<&[u8]> = None;
@@ -1385,6 +1400,11 @@ impl FirewallEngine {
                     if let Some(http_info) = crate::http_parser::extract_http_info(payload) {
                         hostname = http_info.host.clone();
                         full_url = http_info.full_url;
+                        http_method = Some(http_info.method);
+                        http_path = Some(http_info.path);
+                        http_user_agent = http_info.user_agent;
+                        http_content_type = http_info.content_type;
+                        http_referer = http_info.referer;
                     }
                 }
             }
@@ -1436,6 +1456,11 @@ impl FirewallEngine {
             dns_query,
             hostname,
             full_url,
+            http_method,
+            http_path,
+            http_user_agent,
+            http_content_type,
+            http_referer,
             payload_entropy,
             payload_sample,
         })
@@ -1464,6 +1489,21 @@ impl FirewallEngine {
         }
         if let Some(ref url) = info.full_url {
             parts.push(format!("url={}", url));
+        }
+        if let Some(ref method) = info.http_method {
+            parts.push(format!("method={}", method));
+        }
+        if let Some(ref path) = info.http_path {
+            parts.push(format!("path={}", path));
+        }
+        if let Some(ref ua) = info.http_user_agent {
+            parts.push(format!("ua={}", ua));
+        }
+        if let Some(ref ct) = info.http_content_type {
+            parts.push(format!("ctype={}", ct));
+        }
+        if let Some(ref referer) = info.http_referer {
+            parts.push(format!("referer={}", referer));
         }
         if let Some(ref dns) = info.dns_query {
             parts.push(format!("dns={}", dns));

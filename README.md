@@ -76,6 +76,7 @@ A high-performance, kernel-mode packet filter powered by WinDivert.
   - **Web Filtering**: Blocks malicious IPs and domains using optimized blocklists (Scam, Malware, Phishing).
   - **Entropy + Payload Visibility**: Logs Shannon entropy and a hex preview of payload bytes for forensic review of suspicious packets.
   - **Context-Rich Logging**: Every allow/block entry now carries full URL/host/DNS details, IP/port tuples, PID, direction, entropy, and the first payload bytes so remote requests can't hide behind raw IP addresses.
+  - **HTTP Header Telemetry**: Captures HTTP method/path along with User-Agent, Content-Type, and Referer headers for each inspected request so domain/URL decisions include client fingerprinting.
   - **Default-Deny Remote Policy**: Non-localhost traffic is blocked unless explicitly whitelisted or allowed via rules to ensure only trusted hosts escape the loopback boundary.
   - **Performance**: Zero-copy packet handling for minimal latency.
 
