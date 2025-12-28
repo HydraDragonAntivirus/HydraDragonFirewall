@@ -237,7 +237,7 @@ pub struct FirewallSettings {
 
 impl Default for FirewallSettings {
     fn default() -> Self {
-        let mut ips = HashSet::new();
+        let ips = HashSet::new();
         // Localhost disabled by default to allow inspection
         // ips.insert("127.0.0.1".to_string());
         // ips.insert("::1".to_string());
@@ -954,11 +954,10 @@ impl FirewallEngine {
                                     .to_vec()
                                 };
 
-                                // WinDivert 2.x exposes the originating PID in the address metadata.
-                                // Using it here allows the AppManager to surface allow/block prompts
-                                // for real processes instead of defaulting to PID 0 ("System"), which
-                                // previously bypassed the decision flow entirely.
-                                let pid = packet.address.process_id();
+                                // Network-layer captures don't provide process IDs. We still thread a
+                                // PID through decision-making so AppManager can resolve it via the
+                                // hook DLL's port-to-PID cache or named pipe updates.
+                                let pid = 0;
 
                                 let decision = Self::process_packet_decision(
                                     &packet.data,
