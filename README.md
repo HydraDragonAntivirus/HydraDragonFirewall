@@ -37,14 +37,6 @@ sudo apt-get install -y build-essential pkg-config libglib2.0-dev libgtk-3-dev l
 
 The WinDivert driver itself must be present on Windows when running the firewall; see `copy_driver.ps1` for automating the driver copy step.
 
-## 📂 File Transfer
-
-Seamlessly transfer files between connected machines.
-
-- **Sender**: Click "Send File" on the Client toolbar.
-- **Receiver**: Files are automatically saved to the Desktop.
-- **Protocol**: Chunked binary transfer with integrity checks.
-
 ## 📁 Project Structure
 
 ```
